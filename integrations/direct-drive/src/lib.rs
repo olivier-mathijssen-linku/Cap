@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 
 pub const CLIENT_ID: &str =
-    "322331330903-mpt9jesq45hp5r4imos6sgu2a6jriskf.apps.googleusercontent.com";
+    "322331330903-m6mimqp7vedg8i2l070l2k3f5pkcsuma.apps.googleusercontent.com";
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const CHUNK_SIZE: usize = 8 * 1024 * 1024;
