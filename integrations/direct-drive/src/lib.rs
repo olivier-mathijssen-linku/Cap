@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -13,11 +13,16 @@ use tokio::net::TcpListener;
 
 pub const CLIENT_ID: &str =
     "322331330903-m6mimqp7vedg8i2l070l2k3f5pkcsuma.apps.googleusercontent.com";
-const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
+const SCOPE: &str = "https://www.googleapis.com/auth/drive";
+const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+const FILES_URL: &str = "https://www.googleapis.com/drive/v3/files";
+const SCOPE_MESSAGE: &str =
+    "Reconnect Google Drive in Settings so the app can browse and choose folders.";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const CHUNK_SIZE: usize = 8 * 1024 * 1024;
 const CANCELLED: &str = "Export cancelled";
 static CONNECTED: OnceLock<AtomicBool> = OnceLock::new();
+static FULL_ACCESS: OnceLock<AtomicBool> = OnceLock::new();
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -36,18 +41,71 @@ struct OAuthClient {
 struct Connection {
     refresh_token: String,
     folder_id: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Token {
     access_token: String,
     refresh_token: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct DriveFile {
     id: String,
     size: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriveFolder {
+    pub id: String,
+    pub name: String,
+}
+
+/// A folder together with the names leading to it, for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriveDestination {
+    pub folder: DriveFolder,
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FolderParent {
+    MyDrive,
+    SharedDrives,
+    Folder(String),
+}
+
+#[derive(Deserialize)]
+struct FolderList {
+    #[serde(default)]
+    files: Vec<DriveFolder>,
+}
+
+#[derive(Deserialize)]
+struct SharedDriveList {
+    #[serde(default)]
+    drives: Vec<DriveFolder>,
+}
+
+#[derive(Deserialize)]
+struct About {
+    user: AboutUser,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AboutUser {
+    display_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamConfig {
+    team_folder_id: String,
 }
 
 pub struct Authorization {
@@ -94,6 +152,12 @@ fn save_connection(connection: &Connection) -> Result<()> {
     if let Some(connected) = CONNECTED.get() {
         connected.store(true, Ordering::Release);
     }
+    if let Some(full) = FULL_ACCESS.get() {
+        full.store(
+            connection.scope.as_deref().is_some_and(grants_full_drive),
+            Ordering::Release,
+        );
+    }
     Ok(())
 }
 
@@ -103,11 +167,62 @@ pub fn is_connected() -> bool {
         .load(Ordering::Acquire)
 }
 
+/// Whether the stored connection was granted full Drive access. Connections
+/// made before folder choice existed only hold `drive.file` and must reconnect.
+pub fn can_browse_folders() -> bool {
+    FULL_ACCESS
+        .get_or_init(|| {
+            AtomicBool::new(
+                connection()
+                    .ok()
+                    .flatten()
+                    .and_then(|connection| connection.scope)
+                    .is_some_and(|scope| grants_full_drive(&scope)),
+            )
+        })
+        .load(Ordering::Acquire)
+}
+
+fn grants_full_drive(scope: &str) -> bool {
+    scope.split_whitespace().any(|granted| granted == SCOPE)
+}
+
+fn team_config_path() -> Option<PathBuf> {
+    std::env::var_os("CAP_DRIVE_TEAM_FILE")
+        .map(PathBuf::from)
+        .or_else(|| dirs::config_dir().map(|path| path.join("CapDrive/drive-team.json")))
+}
+
+fn parse_team_config(text: &str) -> Result<Option<String>> {
+    let config: TeamConfig = serde_json::from_str(text)
+        .map_err(|_| "The Drive team configuration must contain a teamFolderId")?;
+    let id = config.team_folder_id.trim().to_string();
+    Ok((!id.is_empty()).then_some(id))
+}
+
+fn team_folder_id() -> Result<Option<String>> {
+    let Some(path) = team_config_path() else {
+        return Ok(None);
+    };
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse_team_config(&text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Could not read the Drive team configuration".into()),
+    }
+}
+
+pub fn has_team_folder() -> bool {
+    team_folder_id().ok().flatten().is_some()
+}
+
 pub fn disconnect() -> Result<()> {
     match credential()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {
             if let Some(connected) = CONNECTED.get() {
                 connected.store(false, Ordering::Release);
+            }
+            if let Some(full) = FULL_ACCESS.get() {
+                full.store(false, Ordering::Release);
             }
             Ok(())
         }
@@ -288,6 +403,7 @@ impl Authorization {
             save_connection(&Connection {
                 refresh_token: token.refresh_token.ok_or("Google did not grant offline access. Reconnect and approve access.")?,
                 folder_id: None,
+                scope: token.scope,
             })
         }).await
     }
@@ -317,12 +433,209 @@ async fn drive_response(response: reqwest::Response) -> Result<reqwest::Response
         return Ok(response);
     }
     let status = response.status();
+    if status == StatusCode::FORBIDDEN {
+        let body: serde_json::Value = response.json().await.unwrap_or_default();
+        if scope_insufficient(&body) {
+            return Err(SCOPE_MESSAGE.into());
+        }
+    }
     Err(match status {
         StatusCode::UNAUTHORIZED => "Google sign-in expired. Reconnect Google Drive and retry.".into(),
         StatusCode::FORBIDDEN => "Google Drive denied the upload. Check Drive quota, permissions, and whether the Drive API is enabled.".into(),
         StatusCode::NOT_FOUND => "The Drive destination no longer exists. Disconnect and reconnect to create a new folder.".into(),
         _ => format!("Google Drive request failed ({status}). Your local recording is still saved."),
     })
+}
+
+fn scope_insufficient(body: &serde_json::Value) -> bool {
+    let error = &body["error"];
+    error["status"] == "PERMISSION_DENIED"
+        && error["details"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|detail| detail["reason"] == "ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+        || error["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|entry| entry["reason"] == "insufficientPermissions")
+}
+
+fn quote(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn folder_query(
+    parent: Option<&str>,
+    name_contains: Option<&str>,
+    name_is: Option<&str>,
+) -> String {
+    let mut query = format!("mimeType = '{FOLDER_MIME}' and trashed = false");
+    if let Some(parent) = parent {
+        query.push_str(&format!(" and '{}' in parents", quote(parent)));
+    }
+    if let Some(name) = name_contains {
+        query.push_str(&format!(" and name contains '{}'", quote(name)));
+    }
+    if let Some(name) = name_is {
+        query.push_str(&format!(" and name = '{}'", quote(name)));
+    }
+    query
+}
+
+async fn authorized() -> Result<(Client, String)> {
+    let client = client()?;
+    let connection = connection()?.ok_or("Connect Google Drive first")?;
+    let token = access_token(&client, &connection).await?;
+    Ok((client, token))
+}
+
+async fn find_folders(client: &Client, token: &str, query: &str) -> Result<Vec<DriveFolder>> {
+    let response = client
+        .get(FILES_URL)
+        .bearer_auth(token)
+        .query(&[
+            ("q", query),
+            ("fields", "files(id,name)"),
+            ("orderBy", "name_natural"),
+            ("pageSize", "200"),
+            ("supportsAllDrives", "true"),
+            ("includeItemsFromAllDrives", "true"),
+            ("corpora", "allDrives"),
+        ])
+        .send()
+        .await
+        .map_err(|_| "Could not load Drive folders")?;
+    let list: FolderList = drive_response(response)
+        .await?
+        .json()
+        .await
+        .map_err(|_| "Could not read Drive folders")?;
+    Ok(list.files)
+}
+
+async fn make_folder(
+    client: &Client,
+    token: &str,
+    parent: &str,
+    name: &str,
+) -> Result<DriveFolder> {
+    let response = client
+        .post(FILES_URL)
+        .bearer_auth(token)
+        .query(&[("fields", "id,name"), ("supportsAllDrives", "true")])
+        .json(&json!({"name": name, "mimeType": FOLDER_MIME, "parents": [parent]}))
+        .send()
+        .await
+        .map_err(|_| "Could not create the Drive folder")?;
+    drive_response(response)
+        .await?
+        .json()
+        .await
+        .map_err(|_| "Could not read the new Drive folder".into())
+}
+
+/// The folders directly inside `parent`. For [`FolderParent::SharedDrives`]
+/// these are the shared drives themselves, whose ids work as folder ids.
+pub async fn list_folders(parent: FolderParent) -> Result<Vec<DriveFolder>> {
+    let (client, token) = authorized().await?;
+    match parent {
+        FolderParent::SharedDrives => {
+            let response = client
+                .get("https://www.googleapis.com/drive/v3/drives")
+                .bearer_auth(&token)
+                .query(&[("fields", "drives(id,name)"), ("pageSize", "100")])
+                .send()
+                .await
+                .map_err(|_| "Could not load shared drives")?;
+            let list: SharedDriveList = drive_response(response)
+                .await?
+                .json()
+                .await
+                .map_err(|_| "Could not read shared drives")?;
+            Ok(list.drives)
+        }
+        FolderParent::MyDrive => {
+            find_folders(&client, &token, &folder_query(Some("root"), None, None)).await
+        }
+        FolderParent::Folder(id) => {
+            find_folders(&client, &token, &folder_query(Some(&id), None, None)).await
+        }
+    }
+}
+
+pub async fn search_folders(text: &str) -> Result<Vec<DriveFolder>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (client, token) = authorized().await?;
+    find_folders(&client, &token, &folder_query(None, Some(text), None)).await
+}
+
+/// `parent` is a folder id, a shared drive id, or `root` for My Drive.
+pub async fn create_folder(parent: &str, name: &str) -> Result<DriveFolder> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the folder a name".into());
+    }
+    let (client, token) = authorized().await?;
+    make_folder(&client, &token, parent, name).await
+}
+
+/// The configured team folder with a subfolder named after the signed-in
+/// Google account inside it, created on first use. `None` without a team
+/// configuration.
+pub async fn team_destination() -> Result<Option<DriveDestination>> {
+    let Some(team_id) = team_folder_id()? else {
+        return Ok(None);
+    };
+    let (client, token) = authorized().await?;
+    let response = client
+        .get(format!("{FILES_URL}/{team_id}"))
+        .bearer_auth(&token)
+        .query(&[("fields", "id,name"), ("supportsAllDrives", "true")])
+        .send()
+        .await
+        .map_err(|_| "Could not open the team folder in Drive")?;
+    let team: DriveFolder = drive_response(response)
+        .await?
+        .json()
+        .await
+        .map_err(|_| "Could not read the team folder")?;
+    let response = client
+        .get("https://www.googleapis.com/drive/v3/about")
+        .bearer_auth(&token)
+        .query(&[("fields", "user(displayName)")])
+        .send()
+        .await
+        .map_err(|_| "Could not read your Google account name")?;
+    let about: About = drive_response(response)
+        .await?
+        .json()
+        .await
+        .map_err(|_| "Could not read your Google account name")?;
+    let name = about.user.display_name.trim().to_string();
+    if name.is_empty() {
+        return Err("Your Google account has no name to use for the folder".into());
+    }
+    let existing = find_folders(
+        &client,
+        &token,
+        &folder_query(Some(&team.id), None, Some(&name)),
+    )
+    .await?
+    .into_iter()
+    .next();
+    let folder = match existing {
+        Some(folder) => folder,
+        None => make_folder(&client, &token, &team.id, &name).await?,
+    };
+    Ok(Some(DriveDestination {
+        path: vec![team.name, folder.name.clone()],
+        folder,
+    }))
 }
 
 fn session_url(value: &str) -> Result<Url> {
@@ -477,9 +790,12 @@ async fn upload_chunks(
 #[cfg(test)]
 mod tests;
 
+/// Uploads into `folder_id` when given, otherwise into the app's own
+/// `Kiekes-opnames` folder.
 pub async fn upload(
     path: &Path,
     name: &str,
+    folder_id: Option<&str>,
     progress: impl Fn(f64),
     cancel: &AtomicBool,
 ) -> Result<String> {
@@ -489,10 +805,10 @@ pub async fn upload(
         let client = client()?;
         let mut connection = connection()?.ok_or("Connect Google Drive before uploading")?;
         let token = access_token(&client, &connection).await?;
-        let folder = if let Some(id) = &connection.folder_id { id.clone() } else {
+        let folder = if let Some(id) = folder_id { id.to_string() } else if let Some(id) = &connection.folder_id { id.clone() } else {
             let response = client.post("https://www.googleapis.com/drive/v3/files")
                 .bearer_auth(&token).query(&[("fields", "id")])
-                .json(&json!({"name": "Cap Recordings", "mimeType": "application/vnd.google-apps.folder"}))
+                .json(&json!({"name": "Kiekes-opnames", "mimeType": "application/vnd.google-apps.folder"}))
                 .send().await.map_err(|_| "Could not create the recordings folder in Drive")?;
             let folder: DriveFile = drive_response(response).await?.json().await.map_err(|_| "Could not read the Drive folder")?;
             connection.folder_id = Some(folder.id.clone());
@@ -501,7 +817,7 @@ pub async fn upload(
         };
         let name = if name.ends_with(".mp4") { name.to_string() } else { format!("{name}.mp4") };
         let response = client.post("https://www.googleapis.com/upload/drive/v3/files")
-            .bearer_auth(&token).query(&[("uploadType", "resumable"), ("fields", "id,size")])
+            .bearer_auth(&token).query(&[("uploadType", "resumable"), ("fields", "id,size"), ("supportsAllDrives", "true")])
             .header("X-Upload-Content-Type", "video/mp4")
             .header("X-Upload-Content-Length", total)
             .json(&json!({"name": name, "parents": [folder], "mimeType": "video/mp4"}))

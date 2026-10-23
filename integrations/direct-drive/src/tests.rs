@@ -229,3 +229,54 @@ async fn denied_google_consent_finishes_without_waiting_for_timeout() {
         .unwrap();
     assert_eq!(result.unwrap_err(), "Google Drive access was not granted");
 }
+
+#[test]
+fn folder_queries_escape_names_and_only_match_live_folders() {
+    assert_eq!(
+        folder_query(Some("root"), None, None),
+        "mimeType = 'application/vnd.google-apps.folder' and trashed = false and 'root' in parents"
+    );
+    assert_eq!(
+        folder_query(Some("team"), None, Some("Klant's map")),
+        "mimeType = 'application/vnd.google-apps.folder' and trashed = false and 'team' in parents and name = 'Klant\\'s map'"
+    );
+    assert_eq!(
+        folder_query(None, Some("a\\b"), None),
+        "mimeType = 'application/vnd.google-apps.folder' and trashed = false and name contains 'a\\\\b'"
+    );
+}
+
+#[test]
+fn team_configuration_needs_a_folder_id() {
+    assert_eq!(
+        parse_team_config(r#"{"teamFolderId": " abc123 "}"#).unwrap(),
+        Some("abc123".to_string())
+    );
+    assert_eq!(parse_team_config(r#"{"teamFolderId": ""}"#).unwrap(), None);
+    assert!(parse_team_config(r#"{"folder": "abc"}"#).is_err());
+    assert!(parse_team_config("not json").is_err());
+}
+
+#[test]
+fn only_full_drive_access_allows_folder_browsing() {
+    assert!(grants_full_drive("https://www.googleapis.com/auth/drive"));
+    assert!(grants_full_drive(
+        "openid https://www.googleapis.com/auth/drive email"
+    ));
+    assert!(!grants_full_drive(
+        "https://www.googleapis.com/auth/drive.file"
+    ));
+    assert!(!grants_full_drive(""));
+}
+
+#[test]
+fn insufficient_scope_errors_are_recognised() {
+    let modern = serde_json::json!({"error": {"status": "PERMISSION_DENIED",
+        "details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}});
+    let legacy = serde_json::json!({"error": {"errors": [{"reason": "insufficientPermissions"}]}});
+    let quota = serde_json::json!({"error": {"errors": [{"reason": "storageQuotaExceeded"}]}});
+    assert!(scope_insufficient(&modern));
+    assert!(scope_insufficient(&legacy));
+    assert!(!scope_insufficient(&quota));
+    assert!(!scope_insufficient(&serde_json::json!({})));
+}

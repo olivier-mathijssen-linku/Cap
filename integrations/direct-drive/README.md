@@ -21,10 +21,28 @@ Existing Cap links are never overwritten by this path.
    and click Upload to Google Drive.
 6. Open the copied link and use Google's Share dialog to give viewers access.
 
-The app requests only `drive.file`. Refresh tokens are stored in the operating
-system credential store, not in the repository or Cap's server. The app creates
-a private `Cap Recordings` folder and never creates public sharing permissions.
-Changing sharing on that folder in Drive can affect its children's access.
+The app requests the full `drive` scope so people can browse My Drive and
+shared drives, pick any folder and create project folders. Google treats this
+as a restricted scope: keep the OAuth consent screen on **Internal** for the
+Linku Workspace, which avoids Google's verification but limits sign-in to Linku
+accounts. Connections made with the older `drive.file` scope keep uploading to
+their existing `Cap Recordings` folder but must disconnect and reconnect before folders can be chosen.
+Refresh tokens are stored in the operating system credential store, not in the
+repository or Cap's server. The app never creates public sharing permissions.
+Changing sharing on a folder in Drive can affect its children's access.
+
+### Team folder
+
+Place `drive-team.json` next to `google-oauth.json` (or point
+`CAP_DRIVE_TEAM_FILE` at it):
+
+```json
+{ "teamFolderId": "<Drive folder id, for example from a shared drive>" }
+```
+
+Everyone's default upload folder is then `<team folder>/<Google display name>`,
+created on first use. Without this file the default is a private `Kiekes-opnames` folder (connections made earlier keep their existing `Cap Recordings` folder).
+The folder chosen in the export panel is remembered per user.
 Disconnect removes the local credential; it does not delete recordings or revoke
 Google's grant. Grants can also be revoked in your Google account settings.
 
