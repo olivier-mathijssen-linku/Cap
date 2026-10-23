@@ -3460,6 +3460,10 @@ impl EditorWindow {
             cx.stop_propagation();
             return;
         }
+        if self.export_quick_menu_key(event.keystroke.key.as_str(), window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if self.add_track.is_some() && event.keystroke.key.as_str() == "escape" {
             self.add_track = None;
             cx.stop_propagation();
@@ -9470,7 +9474,6 @@ impl EditorWindow {
                     .when(self.sharing.is_some(), |group| {
                         group.child(self.render_reupload_button(cx))
                     })
-                    .child(self.render_export_button(cx))
                     .relative()
                     .children((!self.visual_ready()).then(|| {
                         div()
@@ -9518,77 +9521,6 @@ impl EditorWindow {
             .when(!compact, |button| button.label(label))
             .tooltip(&theme, label)
             .disabled(true)
-    }
-
-    /// The Export button: the one primary control in the editor, a vertical
-    /// `accent-2 -> accent` gradient with a 1px top highlight.
-    fn render_export_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor = self.theme.editor;
-        let gradient = |top: gpui::Rgba, bottom: gpui::Rgba| {
-            gpui::linear_gradient(
-                180.,
-                gpui::linear_color_stop(top, 0.),
-                gpui::linear_color_stop(bottom, 1.),
-            )
-        };
-        div()
-            .id("editor-export")
-            .relative()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
-            .pl(px(12.))
-            .pr(px(14.))
-            .h(px(30.))
-            .flex_none()
-            .overflow_hidden()
-            .rounded(px(8.))
-            .when(self.project_ready(), |button| button.cursor_pointer())
-            .when(!self.project_ready(), |button| button.opacity(0.5))
-            .bg(gradient(editor.accent_2, editor.accent))
-            .hover(move |style| {
-                style.bg(gradient(
-                    crate::theme::mix(editor.accent_2, gpui::rgb(0xffffff), 0.10),
-                    crate::theme::mix(editor.accent, gpui::rgb(0xffffff), 0.10),
-                ))
-            })
-            .active(move |style| {
-                style.bg(gradient(
-                    crate::theme::mix(editor.accent_2, gpui::rgb(0x000000), 0.06),
-                    crate::theme::mix(editor.accent, gpui::rgb(0x000000), 0.06),
-                ))
-            })
-            .text_size(px(13.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(gpui::white())
-            // gpui has no box-shadow, so the `inset 0 1px 0 rgba(255,255,255,
-            // .22)` highlight is a painted hairline instead.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(1.))
-                    .bg(gpui::hsla(0., 0., 1., 0.22)),
-            )
-            .child(
-                svg()
-                    .path("icons/upload-arrow.svg")
-                    .size(px(15.))
-                    .flex_shrink_0()
-                    .text_color(gpui::white()),
-            )
-            .child("Export")
-            .when(self.project_ready(), |button| {
-                button.on_click(cx.listener(|this, _, window, cx| {
-                    if this.project_ready() {
-                        this.open_export(window, cx);
-                    }
-                }))
-            })
     }
 
     // -- Player --------------------------------------------------------------
@@ -11237,10 +11169,8 @@ impl Render for EditorWindow {
         // assuming the default width.
         let viewport_width: f32 = window.viewport_size().width.into();
 
-        let layout = EditorVerticalLayout::new(
-            f32::from(window.viewport_size().height),
-            self.preferred_timeline_height(),
-        );
+        let viewport_height = f32::from(window.viewport_size().height);
+        let layout = EditorVerticalLayout::new(viewport_height, self.preferred_timeline_height());
 
         // `onMount`'s `checkBounds` (`TL/index.tsx:689-703`): once the
         // timeline has a width, zoom in until a segment would be at least
@@ -11263,16 +11193,8 @@ impl Render for EditorWindow {
             }
         }
 
-        if self.export.is_some() {
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .font_family(crate::theme::UI_FONT)
-                .bg(self.root_bg())
-                .text_color(Hsla::from(theme.gray_12))
-                .track_focus(&self.focus)
-                .child(self.render_export_page(window, cx));
+        if self.export.is_none() && self.project_ready() {
+            self.ensure_export(window, cx);
         }
 
         let timeline_drag_cursor = self
@@ -11504,12 +11426,17 @@ impl Render for EditorWindow {
                                 div()
                                     .relative()
                                     .flex_none()
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(crate::editor_export::EXPORT_PANEL_GAP))
                                     .w_full()
                                     .px(px(8.))
                                     .h(px(layout.timeline_height))
                                     .child(
                                         div()
-                                            .size_full()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
                                             .rounded(px(12.))
                                             .border_1()
                                             .border_color(self.card_line())
@@ -11520,6 +11447,7 @@ impl Render for EditorWindow {
                                                 StyleRefinement::default().w_full().h_full(),
                                             )),
                                     )
+                                    .child(self.render_export_panel(cx))
                                     // The grip rides the gap between the two
                                     // cards rather than taking a strip of the
                                     // player card for itself.
@@ -11578,6 +11506,7 @@ impl Render for EditorWindow {
             // over everything -- the same shape the settings window's sliders
             // use, because gpui has no pointer capture and a 96px row would
             // otherwise lose the drag the moment the pointer left it.
+            .children(self.render_export_drag_layer(cx))
             .children(timeline_drag_cursor.map(|cursor| {
                 div()
                     .id("timeline-active-drag-cursor")
@@ -11709,6 +11638,17 @@ impl Render for EditorWindow {
             }))
             .children(self.with_style_controls(|this| this.render_color_picker_popover(cx)))
             .children(self.render_presets_menu(cx))
+            .children(self.render_export_settings_popover(
+                layout.timeline_height + 16.,
+                viewport_height - HEADER_HEIGHT - layout.timeline_height - 32.,
+                cx,
+            ))
+            .children(self.render_export_quick_menu(cx))
+            .children(self.render_drive_folder_picker(
+                layout.timeline_height + 16.,
+                viewport_height - HEADER_HEIGHT - layout.timeline_height - 32.,
+                cx,
+            ))
             .children(self.render_preset_dialog(cx))
             // The clips overlays: import menu, record modal, and the card
             // drag's window-wide layer with its floating ghost.

@@ -78,6 +78,9 @@ pub const START_SNAP_PX: f64 = 10.;
 /// `px-2` on the timeline slot (`Editor.tsx:781`) -- the card's own left edge
 /// in window coordinates.
 pub const TIMELINE_SLOT_PADDING: f32 = 8.;
+/// The export panel and its gutter, which share the timeline's row.
+const EXPORT_PANEL_SPACE: f32 =
+    crate::editor_export::EXPORT_PANEL_WIDTH + crate::editor_export::EXPORT_PANEL_GAP;
 /// `pr-1` on the scroll body (`TL/index.tsx:1326`). The clip track -- which is
 /// what `timelineBounds` measures -- sits inside it, so every `secsPerPixel` in
 /// the timeline is computed over a column four pixels narrower than the ruler's.
@@ -178,7 +181,7 @@ pub const MINIMAP_MAX_WIDTH: f32 = 78.;
 /// in both themes exactly as they are there
 /// (`apps/desktop/src/styles/theme.css`).
 pub mod track_color {
-    pub const CLIP: u32 = 0x3b82f6;
+    pub const CLIP: u32 = 0x3b66c4;
     pub const ZOOM: u32 = 0x64748b;
     pub const CAPTION: u32 = 0x0ea5e9;
     pub const KEYBOARD: u32 = 0xf97316;
@@ -397,6 +400,7 @@ impl Transform {
 /// each side, less the scroll body's `pr-1`, less the gutter.
 pub fn content_width(viewport_width: f32) -> f32 {
     (viewport_width
+        - EXPORT_PANEL_SPACE
         - TIMELINE_SLOT_PADDING * 2.
         - (TIMELINE_CARD_BORDER + TIMELINE_PADDING) * 2.
         - SCROLL_BODY_PADDING_RIGHT
@@ -411,6 +415,7 @@ pub fn content_width(viewport_width: f32) -> f32 {
 /// tracks and the strip simply has four pixels of slack at its right edge.
 pub fn ruler_width(viewport_width: f32) -> f32 {
     (viewport_width
+        - EXPORT_PANEL_SPACE
         - TIMELINE_SLOT_PADDING * 2.
         - (TIMELINE_CARD_BORDER + TIMELINE_PADDING) * 2.
         - TRACK_GUTTER)
@@ -4063,8 +4068,8 @@ mod tests {
     /// wider.
     #[test]
     fn the_content_column_carries_the_scroll_bodys_padding() {
-        assert_eq!(content_width(1275.), 1127.);
-        assert_eq!(ruler_width(1275.), 1131.);
+        assert_eq!(content_width(1275.), 1127. - EXPORT_PANEL_SPACE);
+        assert_eq!(ruler_width(1275.), 1131. - EXPORT_PANEL_SPACE);
         assert_eq!(content_left(), 124.);
     }
 

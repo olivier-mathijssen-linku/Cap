@@ -1,6 +1,8 @@
 //! Editor export page -- `routes/editor/ExportPage.tsx`, 1:1 layout.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -19,9 +21,9 @@ use cap_utils::export_resources::{
     DiskBudget, ExportResources, estimated_working_bytes, is_resource_stop,
 };
 use gpui::{
-    Context, FontWeight, Hsla, InteractiveElement, IntoElement, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, RenderImage, StatefulInteractiveElement, Styled, Window, div, img,
-    prelude::FluentBuilder, px, svg,
+    AppContext as _, Bounds, Context, FontWeight, Hsla, InteractiveElement, IntoElement,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, RenderImage, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, svg,
 };
 
 use crate::editor_window::EditorWindow;
@@ -30,19 +32,14 @@ use crate::store::{self, ExportPrefs};
 use crate::ui;
 use crate::{library, platform};
 
-const SIDEBAR_WIDTH: f32 = 400.;
-const HEADER_HEIGHT: f32 = 52.;
-const STAGE_PADDING_X: f32 = 24.;
-/// Stage top padding, caption row, preview padding, stats card and bottom
-/// padding: everything on the stage that is not the preview itself.
-const STAGE_VERTICAL_CHROME: f32 = 16. + 22. + 14. + 18. + STATS_HEIGHT + 20.;
-const STATS_HEIGHT: f32 = 44.;
+pub(crate) const EXPORT_PANEL_WIDTH: f32 = 416.;
+pub(crate) const EXPORT_PANEL_GAP: f32 = 8.;
 const SEGMENT_HEIGHT: f32 = 26.;
 const COMPRESSION_PRESETS: [(ExportCompression, &str); 4] = [
-    (ExportCompression::Potato, "Potato"),
+    (ExportCompression::Potato, "Klein"),
     (ExportCompression::Web, "Web"),
     (ExportCompression::Social, "Social"),
-    (ExportCompression::Maximum, "Maximum"),
+    (ExportCompression::Maximum, "Max"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,9 +54,9 @@ impl ExportDestination {
 
     fn label(self) -> &'static str {
         match self {
-            Self::File => "File",
-            Self::Clipboard => "Clipboard",
-            Self::Link => "Shareable Link",
+            Self::File => "Bestand",
+            Self::Clipboard => "Klembord",
+            Self::Link => "Deelbare link",
         }
     }
 
@@ -175,10 +172,74 @@ impl ExportPhase {
     }
 }
 
+/// The four settings the export panel shows as chips, each with its own
+/// quick menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickSetting {
+    Format,
+    Resolution,
+    Fps,
+    Quality,
+}
+
+impl QuickSetting {
+    const ALL: [Self; 4] = [Self::Format, Self::Resolution, Self::Fps, Self::Quality];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Format => 0,
+            Self::Resolution => 1,
+            Self::Fps => 2,
+            Self::Quality => 3,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Format => "Formaat",
+            Self::Resolution => "Resolutie",
+            Self::Fps => "Framerate",
+            Self::Quality => "Kwaliteit",
+        }
+    }
+}
+
+pub struct QuickMenu {
+    setting: QuickSetting,
+    state: ui::MenuState,
+}
+
+/// The Drive folder an upload goes to, with the names leading to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriveChoice {
+    pub id: String,
+    pub path: String,
+}
+
+enum FolderEntries {
+    Loading,
+    Loaded(Vec<cap_direct_drive::DriveFolder>),
+    Failed(String),
+    NeedsReconnect,
+}
+
+/// The "Opslaan in Drive" browser: `trail` is the folders opened from the
+/// top level (My Drive plus the shared drives), `selected` a folder in the
+/// current list.
+pub struct FolderPicker {
+    trail: Vec<cap_direct_drive::DriveFolder>,
+    entries: FolderEntries,
+    selected: Option<cap_direct_drive::DriveFolder>,
+    creating: bool,
+    searching: bool,
+    search_input: gpui::Entity<ui::TextInputState>,
+    name_input: gpui::Entity<ui::TextInputState>,
+    task: Option<gpui::Task<()>>,
+    generation: u64,
+    _subscriptions: [gpui::Subscription; 2],
+}
+
 pub struct PreviewStats {
-    pub width: u32,
-    pub height: u32,
-    pub total_frames: u32,
     pub estimated_size_mb: f64,
 }
 
@@ -221,6 +282,15 @@ pub struct ExportUi {
     pub copy_link_pressed: bool,
     bpp_track: ui::SliderTrack,
     bpp_dragging: bool,
+    quick_menu: Option<QuickMenu>,
+    settings_open: bool,
+    chip_bounds: [Rc<Cell<Option<Bounds<Pixels>>>>; 4],
+    pub drive_folder: Option<DriveChoice>,
+    team_folder: Option<DriveChoice>,
+    team_loading: bool,
+    team_error: Option<String>,
+    team_task: Option<gpui::Task<()>>,
+    folder_picker: Option<FolderPicker>,
 }
 
 impl Drop for ExportUi {
@@ -262,6 +332,8 @@ impl ExportUi {
             force_ffmpeg_decoder: false,
             advanced_open: false,
             organization_id: None,
+            drive_folder_id: None,
+            drive_folder_path: None,
         });
         Self::from_preferences(prefs)
     }
@@ -308,6 +380,18 @@ impl ExportUi {
             copy_link_pressed: false,
             bpp_track: ui::SliderTrack::default(),
             bpp_dragging: false,
+            quick_menu: None,
+            settings_open: false,
+            chip_bounds: std::array::from_fn(|_| Rc::new(Cell::new(None))),
+            drive_folder: prefs.drive_folder_id.clone().map(|id| DriveChoice {
+                id,
+                path: prefs.drive_folder_path.clone().unwrap_or_default(),
+            }),
+            team_folder: None,
+            team_loading: false,
+            team_error: None,
+            team_task: None,
+            folder_picker: None,
         }
     }
 
@@ -332,6 +416,8 @@ impl ExportUi {
             force_ffmpeg_decoder: self.force_ffmpeg,
             advanced_open: self.advanced_open,
             organization_id: self.organization_id.clone(),
+            drive_folder_id: self.drive_folder.as_ref().map(|choice| choice.id.clone()),
+            drive_folder_path: self.drive_folder.as_ref().map(|choice| choice.path.clone()),
         };
         store::update(|state| state.export = Some(prefs));
     }
@@ -423,18 +509,6 @@ fn has_transparent_background(project: &cap_project::ProjectConfiguration) -> bo
     )
 }
 
-fn format_duration(seconds: f64) -> String {
-    let total = seconds.max(0.0).round() as u64;
-    let hours = total / 3600;
-    let minutes = (total % 3600) / 60;
-    let secs = total % 60;
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{secs:02}")
-    } else {
-        format!("{minutes}:{secs:02}")
-    }
-}
-
 fn export_file_name(pretty_name: &str, extension: &str) -> String {
     let mut name = sanitize_filename::sanitize_with_options(
         pretty_name,
@@ -447,36 +521,9 @@ fn export_file_name(pretty_name: &str, extension: &str) -> String {
         let _ = name.pop();
     }
     if name.trim().is_empty() {
-        name = "Cap Recording".into();
+        name = "Kiekes Recording".into();
     }
     format!("{name}.{extension}")
-}
-
-fn format_estimate_range(range: [f64; 2], time: bool) -> String {
-    if range[1] < 1.0 {
-        return if time { "< 1s" } else { "< 1 MB" }.into();
-    }
-    let (scale, unit) = if time {
-        if range[1] >= 3600.0 {
-            (3600.0, "hr")
-        } else if range[1] >= 60.0 {
-            (60.0, "min")
-        } else {
-            (1.0, "s")
-        }
-    } else if range[1] >= 1024.0 {
-        (1024.0, "GB")
-    } else {
-        (1.0, "MB")
-    };
-    let precision = if scale == 1.0 { 1.0 } else { 10.0 };
-    let lower = ((range[0] / scale * precision).round() / precision).max(1.0 / precision);
-    let upper = ((range[1] / scale * precision).round() / precision).max(lower);
-    if lower == upper {
-        format!("~{lower} {unit}")
-    } else {
-        format!("~{lower}–{upper} {unit}")
-    }
 }
 
 fn decode_jpeg_bytes(bytes: &[u8]) -> Option<Arc<RenderImage>> {
@@ -496,7 +543,7 @@ impl EditorWindow {
             .child(
                 ui::EditorButton::plain(&self.theme, "editor-reupload")
                     .left_icon("icons/cloud-upload.svg")
-                    .label("Reupload")
+                    .label("Opnieuw uploaden")
                     .tooltip(
                         &self.theme,
                         if has_transparent_background(&self.project) {
@@ -510,7 +557,7 @@ impl EditorWindow {
                         if !this.project_ready() {
                             return;
                         }
-                        this.open_export(window, cx);
+                        this.ensure_export(window, cx);
                         if !has_transparent_background(&this.project)
                             && let Some(ui) = this.export.as_mut()
                         {
@@ -525,9 +572,9 @@ impl EditorWindow {
             )
     }
 
-    pub(crate) fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.playing {
-            self.toggle_play_from_crop(cx);
+    pub(crate) fn ensure_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.export.is_some() {
+            return;
         }
         let mut ui = ExportUi::load();
         if let Ok(meta) = RecordingMeta::load_for_project(&self.project_path) {
@@ -549,6 +596,23 @@ impl EditorWindow {
         self.export = Some(ui);
         self.subscribe_export_to_sign_in(window, cx);
         self.refresh_export_preview(window, cx);
+        self.load_team_destination(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn reset_export(&mut self, cx: &mut Context<Self>) {
+        let Some(ui) = self.export.as_mut() else {
+            return;
+        };
+        if ui.phase.is_busy() {
+            return;
+        }
+        ui.phase = ExportPhase::Idle;
+        ui.rendered = 0;
+        ui.total_frames = 0;
+        ui.error = None;
+        ui.upload_progress = 0.;
+        ui.copy_link_pressed = false;
         cx.notify();
     }
 
@@ -712,9 +776,6 @@ impl EditorWindow {
                             let _ = window.drop_image(old);
                         }
                         ui.preview_stats = Some(PreviewStats {
-                            width: preview.actual_width,
-                            height: preview.actual_height,
-                            total_frames: preview.total_frames,
                             estimated_size_mb: preview.estimated_size_mb,
                         });
                         ui.preview_error = None;
@@ -776,11 +837,14 @@ impl EditorWindow {
     }
 
     pub(crate) fn start_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.playing && !self.export.as_ref().is_some_and(|ui| ui.phase.is_busy()) {
+            self.toggle_play_from_crop(cx);
+        }
         let pretty_name = self
             .summary()
             .map(|summary| summary.pretty_name.clone())
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "Cap Recording".into());
+            .unwrap_or_else(|| "Kiekes Recording".into());
         let Some(ui) = self.export.as_mut() else {
             return;
         };
@@ -788,6 +852,9 @@ impl EditorWindow {
         if ui.phase.is_busy() || ui.close_requested {
             return;
         }
+        ui.settings_open = false;
+        ui.quick_menu = None;
+        ui.folder_picker = None;
         if ui.destination == ExportDestination::Link {
             if crate::direct_drive::enabled() {
                 if !cap_direct_drive::is_connected() {
@@ -1120,6 +1187,7 @@ impl EditorWindow {
         let force = ui.force_ffmpeg;
         let project_path = self.project_path.clone();
         let project = self.project.clone();
+        let drive_folder = ui.drive_folder.as_ref().map(|choice| choice.id.clone());
         let organization_id = ui.organization_id.clone().or_else(|| {
             store::auth_snapshot()
                 .organizations
@@ -1233,6 +1301,7 @@ impl EditorWindow {
                         if crate::direct_drive::enabled() {
                             return crate::direct_drive::upload_export(
                                 &upload_project,
+                                drive_folder.as_deref(),
                                 |progress| {
                                     let _ = upload_tx.send(progress);
                                 },
@@ -1361,322 +1430,1435 @@ impl EditorWindow {
         }));
     }
 
-    pub(crate) fn render_export_page(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = self.theme;
-        let editor = theme.editor;
-        let Some(ui) = self.export.as_ref() else {
-            return div().into_any_element();
-        };
-
-        let header = div()
-            .relative()
-            .h(px(HEADER_HEIGHT))
-            .flex_none()
-            .flex()
-            .flex_row()
-            .items_center()
-            .pl(px(if cfg!(target_os = "macos") { 92. } else { 12. }))
-            .pr(px(12.))
-            .border_b_1()
-            .border_color(Hsla::from(editor.line))
-            .when(cfg!(target_os = "windows"), |header| {
-                header.window_control_area(gpui::WindowControlArea::Drag)
-            })
-            .when(!cfg!(target_os = "windows"), |header| {
-                header.on_mouse_down(gpui::MouseButton::Left, |event, window, _| {
-                    if event.click_count == 2 {
-                        window.titlebar_double_click();
-                    } else {
-                        window.start_window_move();
-                    }
-                })
-            })
-            .child(
-                div().flex_1().flex().flex_row().items_center().child(
-                    div()
-                        .id("export-back")
-                        .when(cfg!(target_os = "windows"), |button| button.occlude())
-                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.))
-                        .h(px(28.))
-                        .pl(px(8.))
-                        .pr(px(10.))
-                        .rounded(px(8.))
-                        .cursor_pointer()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(Hsla::from(editor.text_2))
-                        .hover(move |style| {
-                            style
-                                .bg(Hsla::from(editor.ctl))
-                                .text_color(Hsla::from(editor.text_1))
-                        })
-                        .child(
-                            svg()
-                                .path("icons/move-left.svg")
-                                .size(px(14.))
-                                .text_color(Hsla::from(editor.text_2)),
-                        )
-                        .child("Back to editor")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.close_export(window, cx);
-                        })),
-                ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(Hsla::from(editor.text_1))
-                    .child("Export"),
-            )
-            .child(div().flex_1());
-        #[cfg(target_os = "windows")]
-        let header = header.child(div().absolute().right_0().top_0().h_full().child(
-            ui::windows_caption_controls(
-                theme,
-                window.is_window_active(),
-                window.is_maximized(),
-                true,
-                true,
-            ),
-        ));
-
-        let viewport = window.viewport_size();
-        let preview_box = preview_fit(
-            f32::from(viewport.width) - SIDEBAR_WIDTH - STAGE_PADDING_X * 2.,
-            f32::from(viewport.height) - HEADER_HEIGHT - STAGE_VERTICAL_CHROME,
-            ui.preview.as_ref().map(|image| {
-                let size = image.size(0);
-                (size.width.0 as f32, size.height.0 as f32)
-            }),
-        );
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .relative()
-            .child(header)
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.render_export_preview_pane(ui, preview_box))
-                    .child(self.render_export_sidebar(ui, cx))
-                    .when(ui.phase.shows_progress(), |this| {
-                        this.child(self.render_export_overlay(ui, cx))
-                    })
-                    .when(ui.phase == ExportPhase::ChoosingFile, |this| {
-                        this.child(div().absolute().inset_0().occlude())
-                    }),
-            )
-            .when(ui.bpp_dragging, |this| {
-                this.child(ui::Slider::drag_layer(
-                    "export-bpp-drag",
-                    cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                        this.export_bpp_drag_to(event.position.x, cx);
-                    }),
-                    cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                        this.export_bpp_mouse_up(window, cx);
-                    }),
-                ))
-            })
-            .into_any_element()
+    fn quick_setting_value(&self, ui: &ExportUi, setting: QuickSetting) -> Option<String> {
+        match setting {
+            QuickSetting::Format => Some(ui.format.label().to_string()),
+            QuickSetting::Resolution => Some(ui.resolution.label().to_string()),
+            QuickSetting::Fps => Some(format!("{} FPS", ui.fps)),
+            QuickSetting::Quality => {
+                if ui.format != ExportFormatKind::Mp4 || ui.cursor_only {
+                    None
+                } else if ui.is_custom_bpp() {
+                    Some("Eigen".to_string())
+                } else {
+                    COMPRESSION_PRESETS
+                        .iter()
+                        .find(|(value, _)| matches_compression(ui.compression, *value))
+                        .map(|(_, label)| label.to_string())
+                }
+            }
+        }
     }
 
-    fn render_export_preview_pane(
+    fn quick_setting_enabled(&self, ui: &ExportUi, setting: QuickSetting) -> bool {
+        let locked = has_transparent_background(&self.project) || ui.cursor_only;
+        match setting {
+            QuickSetting::Format => !locked,
+            QuickSetting::Quality => self.quick_setting_value(ui, setting).is_some(),
+            QuickSetting::Resolution | QuickSetting::Fps => true,
+        }
+    }
+
+    fn quick_setting_items(&self, ui: &ExportUi, setting: QuickSetting) -> Vec<ui::MenuItem> {
+        match setting {
+            QuickSetting::Format => [ExportFormatKind::Mp4, ExportFormatKind::Gif]
+                .iter()
+                .map(|format| ui::MenuItem::new(format.label(), ui.format == *format))
+                .collect(),
+            QuickSetting::Resolution => self
+                .export_resolutions(ui)
+                .iter()
+                .map(|res| ui::MenuItem::new(res.label(), ui.resolution == *res))
+                .collect(),
+            QuickSetting::Fps => self
+                .export_fps_options(ui)
+                .iter()
+                .map(|fps| ui::MenuItem::new(format!("{fps} FPS"), ui.fps == *fps))
+                .collect(),
+            QuickSetting::Quality => COMPRESSION_PRESETS
+                .iter()
+                .map(|(value, label)| {
+                    ui::MenuItem::new(
+                        *label,
+                        !ui.is_custom_bpp() && matches_compression(ui.compression, *value),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn open_quick_setting(
+        &mut self,
+        setting: QuickSetting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ui) = self.export.as_ref() else {
+            return;
+        };
+        if ui.phase.shows_progress() || !self.quick_setting_enabled(ui, setting) {
+            return;
+        }
+        if ui
+            .quick_menu
+            .as_ref()
+            .is_some_and(|menu| menu.setting == setting)
+        {
+            if let Some(ui) = self.export.as_mut() {
+                ui.quick_menu = None;
+            }
+            cx.notify();
+            return;
+        }
+        let Some(bounds) = ui.chip_bounds[setting.index()].get() else {
+            return;
+        };
+        let items = self.quick_setting_items(ui, setting);
+        let focus = self.focus_handle_for_menu();
+        window.focus(&focus, cx);
+        if let Some(ui) = self.export.as_mut() {
+            ui.quick_menu = Some(QuickMenu {
+                setting,
+                state: ui::MenuState::anchored(bounds, &items),
+            });
+        }
+        cx.notify();
+    }
+
+    fn choose_quick_setting(
+        &mut self,
+        setting: QuickSetting,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let resolutions = self
+            .export
+            .as_ref()
+            .map(|ui| self.export_resolutions(ui))
+            .unwrap_or_default();
+        let fps_options = self
+            .export
+            .as_ref()
+            .map(|ui| self.export_fps_options(ui).to_vec())
+            .unwrap_or_default();
+        let Some(ui) = self.export.as_mut() else {
+            return;
+        };
+        ui.quick_menu = None;
+        match setting {
+            QuickSetting::Format => {
+                let Some(format) = [ExportFormatKind::Mp4, ExportFormatKind::Gif]
+                    .get(index)
+                    .copied()
+                else {
+                    return;
+                };
+                ui.format = format;
+                if format == ExportFormatKind::Gif {
+                    if ui.destination == ExportDestination::Link {
+                        ui.destination = ExportDestination::File;
+                    }
+                    if ui.resolution == ExportResolution::P4k {
+                        ui.resolution = ExportResolution::P1080;
+                    }
+                }
+                self.normalize_loaded_export_fps();
+            }
+            QuickSetting::Resolution => {
+                let Some(resolution) = resolutions.get(index).copied() else {
+                    return;
+                };
+                ui.resolution = resolution;
+            }
+            QuickSetting::Fps => {
+                let Some(fps) = fps_options.get(index).copied() else {
+                    return;
+                };
+                ui.fps = fps;
+            }
+            QuickSetting::Quality => {
+                let Some((compression, _)) = COMPRESSION_PRESETS.get(index).copied() else {
+                    return;
+                };
+                ui.compression = compression;
+                ui.custom_bpp = None;
+            }
+        }
+        if let Some(ui) = self.export.as_mut() {
+            ui.persist();
+        }
+        self.refresh_export_preview(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn export_quick_menu_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(menu) = self.export.as_mut().and_then(|ui| ui.quick_menu.as_mut()) else {
+            if key == "escape"
+                && self
+                    .export
+                    .as_ref()
+                    .is_some_and(|ui| ui.folder_picker.is_some())
+            {
+                self.close_folder_picker(cx);
+                return true;
+            }
+            if key == "escape" && self.export.as_ref().is_some_and(|ui| ui.settings_open) {
+                self.close_export_settings(cx);
+                return true;
+            }
+            return false;
+        };
+        let setting = menu.setting;
+        match menu.state.on_key(key) {
+            ui::MenuKey::Moved => {
+                cx.notify();
+                true
+            }
+            ui::MenuKey::Commit(index) => {
+                self.choose_quick_setting(setting, index, window, cx);
+                true
+            }
+            ui::MenuKey::Dismiss => {
+                if let Some(ui) = self.export.as_mut() {
+                    ui.quick_menu = None;
+                }
+                cx.notify();
+                true
+            }
+            ui::MenuKey::Ignored => false,
+        }
+    }
+
+    pub(crate) fn render_export_quick_menu(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let ui = self.export.as_ref()?;
+        let menu = ui.quick_menu.as_ref()?;
+        let setting = menu.setting;
+        let items = self.quick_setting_items(ui, setting);
+        Some(
+            ui::Menu::editor(&self.theme, "export-quick-menu", items, &menu.state)
+                .min_width(px(150.))
+                .on_select(cx.listener(move |this, index: &usize, window, cx| {
+                    this.choose_quick_setting(setting, *index, window, cx);
+                }))
+                .on_dismiss(cx.listener(|this, _, _window, cx| {
+                    if let Some(ui) = this.export.as_mut() {
+                        ui.quick_menu = None;
+                    }
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn render_quick_setting_chip(
         &self,
         ui: &ExportUi,
-        preview_box: (f32, f32),
+        setting: QuickSetting,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = self.theme;
-        let editor = theme.editor;
-        let stats = ui.preview_stats.as_ref();
-        let duration = stats
-            .map(|stats| {
-                if ui.fps == 0 {
-                    0.0
-                } else {
-                    stats.total_frames as f64 / ui.fps as f64
-                }
-            })
-            .unwrap_or(0.0);
-        let (box_w, box_h) = preview_box;
+        let editor = self.theme.editor;
+        let enabled = self.quick_setting_enabled(ui, setting);
+        let open = ui
+            .quick_menu
+            .as_ref()
+            .is_some_and(|menu| menu.setting == setting);
+        let bounds = ui.chip_bounds[setting.index()].clone();
+        let value = self
+            .quick_setting_value(ui, setting)
+            .unwrap_or_else(|| "—".to_string());
 
-        let preview = match ui.preview.clone() {
-            Some(image) => {
-                use gpui::StyledImage as _;
+        div()
+            .id(SharedString::from(format!(
+                "export-chip-{}",
+                setting.index()
+            )))
+            .tab_index(0)
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .justify_center()
+            .gap(px(2.))
+            .h(px(50.))
+            .px(px(10.))
+            .rounded(px(9.))
+            .bg(Hsla::from(editor.card_2))
+            .border_1()
+            .border_color(if open {
+                Hsla::from(editor.accent)
+            } else {
+                Hsla::from(editor.line)
+            })
+            .when(!enabled, |this| this.opacity(0.5))
+            .when(enabled, |this| {
+                this.cursor_pointer()
+                    .hover(move |style| style.bg(Hsla::from(editor.ctl_hover)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_quick_setting(setting, window, cx);
+                    }))
+            })
+            .child(
+                gpui::canvas(move |value, _, _| bounds.set(Some(value)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(
                 div()
-                    .w(px(box_w))
-                    .h(px(box_h))
-                    .rounded(px(10.))
-                    .overflow_hidden()
-                    .shadow(crate::theme::preview_shadow())
-                    .child(img(image).object_fit(gpui::ObjectFit::Contain).size_full())
-                    .into_any_element()
-            }
-            None => div()
-                .w(px(box_w))
-                .h(px(box_h))
-                .rounded(px(10.))
-                .bg(Hsla::from(editor.ctl))
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(24.))
-                .text_size(px(12.))
-                .text_color(Hsla::from(editor.text_2))
-                .text_center()
-                .child(
-                    ui.preview_error
-                        .clone()
-                        .unwrap_or_else(|| "Generating preview…".into()),
-                )
-                .into_any_element(),
-        };
+                    .text_size(px(10.))
+                    .text_color(Hsla::from(editor.text_2))
+                    .child(setting.label()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(value),
+                    )
+                    .when(enabled, |this| {
+                        this.child(
+                            svg()
+                                .path("icons/chevron-down.svg")
+                                .size(px(11.))
+                                .flex_shrink_0()
+                                .text_color(Hsla::from(editor.text_2)),
+                        )
+                    }),
+            )
+    }
+
+    fn render_export_overview(&self, ui: &ExportUi, cx: &mut Context<Self>) -> impl IntoElement {
+        let editor = self.theme.editor;
+        let drive = ui.destination == ExportDestination::Link && crate::direct_drive::enabled();
+
+        let mut chips = div().flex().flex_row().gap(px(6.));
+        for setting in QuickSetting::ALL {
+            chips = chips.child(self.render_quick_setting_chip(ui, setting, cx));
+        }
 
         div()
             .flex()
             .flex_col()
             .flex_1()
-            .min_w_0()
-            .bg(Hsla::from(editor.stage))
-            .pt(px(16.))
-            .px(px(STAGE_PADDING_X))
-            .pb(px(20.))
+            .min_h_0()
+            .p(px(12.))
+            .gap(px(8.))
+            .child(chips)
             .child(
                 div()
-                    .h(px(22.))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(6.))
+                    .justify_between()
+                    .gap(px(8.))
+                    .when(drive, |this| {
+                        this.child(self.render_drive_folder_button(ui, cx))
+                    })
+                    .when(!drive, |this| this.child(div().flex_1()))
                     .child(
                         div()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(Hsla::from(editor.text_2))
-                            .child("Preview"),
-                    )
-                    .child(
-                        div()
-                            .id("export-preview-info")
+                            .id("export-all-settings")
+                            .tab_index(0)
                             .flex()
+                            .flex_row()
                             .items_center()
-                            .tooltip(move |_window, cx| {
-                                crate::ui::Tooltip::new(
-                                    &theme,
-                                    "This is a rendered frame from your video. Adjust the \
-                                     settings to see the quality of the final export.",
-                                )
-                                .view(cx)
+                            .gap(px(6.))
+                            .h(px(26.))
+                            .px(px(10.))
+                            .rounded(px(7.))
+                            .bg(if ui.settings_open {
+                                Hsla::from(editor.ctl_hover)
+                            } else {
+                                Hsla::from(editor.ctl)
                             })
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(Hsla::from(editor.ctl_hover)))
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child(
                                 svg()
-                                    .path("icons/info.svg")
+                                    .path("icons/sliders-horizontal.svg")
                                     .size(px(13.))
-                                    .text_color(Hsla::from(editor.text_3)),
-                            ),
+                                    .text_color(Hsla::from(editor.text_1)),
+                            )
+                            .child("Alle instellingen")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                if let Some(ui) = this.export.as_mut() {
+                                    ui.quick_menu = None;
+                                    ui.settings_open = !ui.settings_open;
+                                }
+                                cx.notify();
+                            })),
                     ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .items_center()
-                    .justify_center()
-                    .pt(px(14.))
-                    .pb(px(18.))
-                    .child(preview),
-            )
-            .child(
-                div().flex().flex_row().justify_center().child(
-                    div()
-                        .h(px(STATS_HEIGHT))
-                        .min_w(px(520.))
-                        .flex()
-                        .flex_row()
-                        .rounded(px(10.))
-                        .bg(Hsla::from(editor.card))
-                        .shadow(editor.card_shadow())
-                        .child(export_stat(
-                            &theme,
-                            "Duration",
-                            stats.map(|_| format_duration(duration)),
-                            false,
-                        ))
-                        .child(export_stat(
-                            &theme,
-                            "Output",
-                            stats.map(|stats| {
-                                format!("{}×{} · {} fps", stats.width, stats.height, ui.fps)
-                            }),
-                            true,
-                        ))
-                        .child(export_stat(
-                            &theme,
-                            if ui.estimate_loading && ui.estimate.is_some() {
-                                "Refining size…"
-                            } else {
-                                "Estimated size"
-                            },
-                            Some(
-                                ui.estimate
-                                    .as_ref()
-                                    .map(|estimate| {
-                                        format_estimate_range(estimate.size_range_mb, false)
-                                    })
-                                    .unwrap_or_else(|| {
-                                        if ui.estimate_loading {
-                                            "Calculating…".into()
-                                        } else {
-                                            "Unavailable".into()
-                                        }
-                                    }),
-                            ),
-                            true,
-                        ))
-                        .child(export_stat(
-                            &theme,
-                            if ui.estimate_loading && ui.estimate.is_some() {
-                                "Refining time…"
-                            } else {
-                                "Export time"
-                            },
-                            Some(
-                                ui.estimate
-                                    .as_ref()
-                                    .map(|estimate| {
-                                        format_estimate_range(estimate.time_range_seconds, true)
-                                    })
-                                    .unwrap_or_else(|| {
-                                        if ui.estimate_loading {
-                                            "Calculating…".into()
-                                        } else {
-                                            "Unavailable".into()
-                                        }
-                                    }),
-                            ),
-                            true,
-                        )),
-                ),
             )
     }
 
-    fn render_export_sidebar(&self, ui: &ExportUi, cx: &mut Context<Self>) -> impl IntoElement {
+    fn drive_folder_label(&self, ui: &ExportUi) -> String {
+        match &ui.drive_folder {
+            Some(choice) => {
+                let parts: Vec<&str> = choice.path.split(" › ").collect();
+                if parts.len() > 2 {
+                    parts[parts.len() - 2..].join(" › ")
+                } else {
+                    choice.path.clone()
+                }
+            }
+            None => "Kiekes-opnames".to_string(),
+        }
+    }
+
+    fn load_team_destination(&mut self, cx: &mut Context<Self>) {
+        let Some(ui) = self.export.as_mut() else {
+            return;
+        };
+        if !crate::direct_drive::enabled()
+            || !cap_direct_drive::is_connected()
+            || !cap_direct_drive::can_browse_folders()
+            || !cap_direct_drive::has_team_folder()
+            || ui.team_task.is_some()
+        {
+            return;
+        }
+        ui.team_loading = true;
+        ui.team_task = Some(cx.spawn(async move |this, cx| {
+            let result = gpui_tokio::Tokio::spawn(cx, cap_direct_drive::team_destination())
+                .await
+                .ok();
+            let _ = this.update(cx, |this, cx| {
+                let Some(ui) = this.export.as_mut() else {
+                    return;
+                };
+                ui.team_loading = false;
+                match result {
+                    Some(Ok(Some(team))) => {
+                        let choice = DriveChoice {
+                            id: team.folder.id.clone(),
+                            path: team.path.join(" › "),
+                        };
+                        if ui.drive_folder.is_none() {
+                            ui.drive_folder = Some(choice.clone());
+                            ui.persist();
+                        }
+                        ui.team_folder = Some(choice);
+                    }
+                    Some(Ok(None)) => {}
+                    Some(Err(error)) => ui.team_error = Some(error),
+                    None => ui.team_error = Some("Could not reach Google Drive".into()),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn open_folder_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = self.export.as_ref() else {
+            return;
+        };
+        if ui.phase.shows_progress() {
+            return;
+        }
+        let search_input = cx.new(|cx| {
+            let mut input = ui::TextInputState::single_line(window, cx);
+            input.set_placeholder("Zoek een map in Drive");
+            input
+        });
+        let name_input = cx.new(|cx| {
+            let mut input = ui::TextInputState::single_line(window, cx);
+            input.set_placeholder("Naam van de nieuwe map");
+            input
+        });
+        let search_events = cx.subscribe(&search_input, |this, input, event, cx| {
+            if matches!(event, ui::TextInputEvent::Changed) {
+                let text = input.read(cx).text().to_string();
+                this.search_drive_folders(text, cx);
+            }
+        });
+        let name_events = cx.subscribe(&name_input, |this, input, event, cx| match event {
+            ui::TextInputEvent::Confirmed => {
+                let name = input.read(cx).text().to_string();
+                this.create_drive_folder(name, cx);
+            }
+            ui::TextInputEvent::Cancelled => {
+                if let Some(picker) = this
+                    .export
+                    .as_mut()
+                    .and_then(|ui| ui.folder_picker.as_mut())
+                {
+                    picker.creating = false;
+                }
+                cx.notify();
+            }
+            _ => {}
+        });
+        if let Some(ui) = self.export.as_mut() {
+            ui.settings_open = false;
+            ui.quick_menu = None;
+            ui.folder_picker = Some(FolderPicker {
+                trail: Vec::new(),
+                entries: FolderEntries::Loading,
+                selected: None,
+                creating: false,
+                searching: false,
+                search_input,
+                name_input,
+                task: None,
+                generation: 0,
+                _subscriptions: [search_events, name_events],
+            });
+        }
+        self.load_team_destination(cx);
+        self.load_drive_folders(cx);
+        cx.notify();
+    }
+
+    fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
+        if let Some(ui) = self.export.as_mut() {
+            ui.folder_picker = None;
+        }
+        cx.notify();
+    }
+
+    fn load_drive_folders(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = self
+            .export
+            .as_mut()
+            .and_then(|ui| ui.folder_picker.as_mut())
+        else {
+            return;
+        };
+        if !cap_direct_drive::is_connected() || !cap_direct_drive::can_browse_folders() {
+            picker.entries = FolderEntries::NeedsReconnect;
+            return;
+        }
+        picker.generation += 1;
+        let generation = picker.generation;
+        picker.entries = FolderEntries::Loading;
+        picker.selected = None;
+        let parent = picker.trail.last().map(|folder| folder.id.clone());
+        picker.task = Some(cx.spawn(async move |this, cx| {
+            let result = gpui_tokio::Tokio::spawn(cx, async move {
+                match parent {
+                    None => {
+                        let mut entries = vec![cap_direct_drive::DriveFolder {
+                            id: "root".into(),
+                            name: "Mijn Drive".into(),
+                        }];
+                        entries.extend(
+                            cap_direct_drive::list_folders(
+                                cap_direct_drive::FolderParent::SharedDrives,
+                            )
+                            .await?,
+                        );
+                        Ok(entries)
+                    }
+                    Some(id) if id == "root" => {
+                        cap_direct_drive::list_folders(cap_direct_drive::FolderParent::MyDrive)
+                            .await
+                    }
+                    Some(id) => {
+                        cap_direct_drive::list_folders(cap_direct_drive::FolderParent::Folder(id))
+                            .await
+                    }
+                }
+            })
+            .await
+            .ok();
+            this.update(cx, |this, cx| {
+                this.finish_drive_folders(generation, result, cx)
+            })
+            .ok();
+        }));
+    }
+
+    fn search_drive_folders(&mut self, text: String, cx: &mut Context<Self>) {
+        let Some(picker) = self
+            .export
+            .as_mut()
+            .and_then(|ui| ui.folder_picker.as_mut())
+        else {
+            return;
+        };
+        if text.trim().is_empty() {
+            picker.searching = false;
+            self.load_drive_folders(cx);
+            cx.notify();
+            return;
+        }
+        picker.searching = true;
+        picker.creating = false;
+        picker.generation += 1;
+        let generation = picker.generation;
+        picker.entries = FolderEntries::Loading;
+        picker.selected = None;
+        picker.task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            let result = gpui_tokio::Tokio::spawn(cx, async move {
+                cap_direct_drive::search_folders(&text).await
+            })
+            .await
+            .ok();
+            this.update(cx, |this, cx| {
+                this.finish_drive_folders(generation, result, cx)
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn finish_drive_folders(
+        &mut self,
+        generation: u64,
+        result: Option<Result<Vec<cap_direct_drive::DriveFolder>, String>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(picker) = self
+            .export
+            .as_mut()
+            .and_then(|ui| ui.folder_picker.as_mut())
+        else {
+            return;
+        };
+        if picker.generation != generation {
+            return;
+        }
+        picker.entries = match result {
+            Some(Ok(folders)) => FolderEntries::Loaded(folders),
+            Some(Err(error)) => FolderEntries::Failed(error),
+            None => FolderEntries::Failed("Could not reach Google Drive".into()),
+        };
+        cx.notify();
+    }
+
+    fn create_drive_folder(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(picker) = self
+            .export
+            .as_mut()
+            .and_then(|ui| ui.folder_picker.as_mut())
+        else {
+            return;
+        };
+        let name = name.trim().to_string();
+        let Some(parent) = picker.trail.last().map(|folder| folder.id.clone()) else {
+            return;
+        };
+        if name.is_empty() || picker.searching {
+            return;
+        }
+        picker.generation += 1;
+        let generation = picker.generation;
+        picker.task = Some(cx.spawn(async move |this, cx| {
+            let result = gpui_tokio::Tokio::spawn(cx, async move {
+                cap_direct_drive::create_folder(&parent, &name).await
+            })
+            .await
+            .ok();
+            this.update(cx, |this, cx| {
+                let Some(picker) = this
+                    .export
+                    .as_mut()
+                    .and_then(|ui| ui.folder_picker.as_mut())
+                else {
+                    return;
+                };
+                if picker.generation != generation {
+                    return;
+                }
+                match result {
+                    Some(Ok(folder)) => {
+                        picker.creating = false;
+                        picker
+                            .name_input
+                            .update(cx, |input, cx| input.set_text("", cx));
+                        if let FolderEntries::Loaded(entries) = &mut picker.entries {
+                            entries.insert(0, folder.clone());
+                        } else {
+                            picker.entries = FolderEntries::Loaded(vec![folder.clone()]);
+                        }
+                        picker.selected = Some(folder);
+                    }
+                    Some(Err(error)) => picker.entries = FolderEntries::Failed(error),
+                    None => {
+                        picker.entries =
+                            FolderEntries::Failed("Could not reach Google Drive".into())
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn open_drive_folder(&mut self, folder: cap_direct_drive::DriveFolder, cx: &mut Context<Self>) {
+        let Some(picker) = self
+            .export
+            .as_mut()
+            .and_then(|ui| ui.folder_picker.as_mut())
+        else {
+            return;
+        };
+        if picker.searching {
+            picker.searching = false;
+            picker.trail.clear();
+            picker
+                .search_input
+                .update(cx, |input, cx| input.set_text("", cx));
+        }
+        picker.creating = false;
+        picker.trail.push(folder);
+        self.load_drive_folders(cx);
+        cx.notify();
+    }
+
+    fn drive_trail_back_to(&mut self, depth: usize, cx: &mut Context<Self>) {
+        let Some(picker) = self
+            .export
+            .as_mut()
+            .and_then(|ui| ui.folder_picker.as_mut())
+        else {
+            return;
+        };
+        picker.trail.truncate(depth);
+        picker.creating = false;
+        self.load_drive_folders(cx);
+        cx.notify();
+    }
+
+    fn choose_drive_folder(&mut self, choice: DriveChoice, cx: &mut Context<Self>) {
+        if let Some(ui) = self.export.as_mut() {
+            ui.drive_folder = Some(choice);
+            ui.folder_picker = None;
+            ui.persist();
+        }
+        cx.notify();
+    }
+
+    fn picker_target(picker: &FolderPicker) -> Option<DriveChoice> {
+        let mut names: Vec<String> = if picker.searching {
+            Vec::new()
+        } else {
+            picker
+                .trail
+                .iter()
+                .map(|folder| folder.name.clone())
+                .collect()
+        };
+        let folder = match &picker.selected {
+            Some(folder) => {
+                names.push(folder.name.clone());
+                folder.clone()
+            }
+            None if !picker.searching => picker.trail.last()?.clone(),
+            None => return None,
+        };
+        Some(DriveChoice {
+            id: folder.id,
+            path: names.join(" › "),
+        })
+    }
+
+    fn render_drive_folder_button(
+        &self,
+        ui: &ExportUi,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let editor = self.theme.editor;
+        let open = ui.folder_picker.is_some();
+        div()
+            .id("export-drive-folder")
+            .tab_index(0)
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(px(6.))
+            .h(px(26.))
+            .pl(px(6.))
+            .pr(px(8.))
+            .rounded(px(7.))
+            .bg(if open {
+                Hsla::from(editor.ctl_hover)
+            } else {
+                Hsla::from(editor.ctl)
+            })
+            .cursor_pointer()
+            .hover(move |style| style.bg(Hsla::from(editor.ctl_hover)))
+            .text_size(px(12.))
+            .child(
+                svg()
+                    .path("icons/folder.svg")
+                    .size(px(14.))
+                    .flex_shrink_0()
+                    .text_color(Hsla::from(editor.text_2)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(self.drive_folder_label(ui)),
+            )
+            .child(
+                svg()
+                    .path("icons/chevron-down.svg")
+                    .size(px(11.))
+                    .flex_shrink_0()
+                    .text_color(Hsla::from(editor.text_2)),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this
+                    .export
+                    .as_ref()
+                    .is_some_and(|ui| ui.folder_picker.is_some())
+                {
+                    this.close_folder_picker(cx);
+                } else {
+                    this.open_folder_picker(window, cx);
+                }
+            }))
+    }
+
+    pub(crate) fn render_drive_folder_picker(
+        &self,
+        bottom: f32,
+        max_height: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let ui = self.export.as_ref()?;
+        let picker = ui.folder_picker.as_ref()?;
+        let theme = self.theme;
+        let editor = theme.editor;
+        let mut scrim: Hsla = gpui::black();
+        scrim.a = if theme.is_dark() { 0.25 } else { 0.08 };
+        let target = Self::picker_target(picker);
+        let can_create = !picker.searching && !picker.trail.is_empty();
+        let save_label = match &target {
+            Some(choice) => format!(
+                "Opslaan in {}",
+                choice.path.rsplit(" › ").next().unwrap_or(&choice.path)
+            ),
+            None => "Kies een map".to_string(),
+        };
+
+        let row = |id: SharedString, folder: cap_direct_drive::DriveFolder, selected: bool| {
+            let select_folder = folder.clone();
+            let open_folder = folder.clone();
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .h(px(40.))
+                .pl(px(8.))
+                .pr(px(4.))
+                .rounded(px(8.))
+                .when(selected, |this| {
+                    this.bg(crate::theme::Theme::with_alpha(editor.accent, 0.16))
+                })
+                .child(
+                    div()
+                        .id(id.clone())
+                        .flex()
+                        .flex_row()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .items_center()
+                        .gap(px(10.))
+                        .cursor_pointer()
+                        .text_size(px(13.))
+                        .child(
+                            svg()
+                                .path("icons/folder.svg")
+                                .size(px(16.))
+                                .flex_shrink_0()
+                                .text_color(if selected {
+                                    Hsla::from(editor.accent)
+                                } else {
+                                    Hsla::from(editor.text_2)
+                                }),
+                        )
+                        .child(div().min_w_0().truncate().child(folder.name.clone()))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            if let Some(picker) = this
+                                .export
+                                .as_mut()
+                                .and_then(|ui| ui.folder_picker.as_mut())
+                            {
+                                picker.selected = if picker
+                                    .selected
+                                    .as_ref()
+                                    .is_some_and(|current| current.id == select_folder.id)
+                                {
+                                    None
+                                } else {
+                                    Some(select_folder.clone())
+                                };
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-open")))
+                        .size(px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(Hsla::from(editor.ctl)))
+                        .child(
+                            svg()
+                                .path("icons/chevron-right.svg")
+                                .size(px(14.))
+                                .text_color(Hsla::from(editor.text_2)),
+                        )
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.open_drive_folder(open_folder.clone(), cx);
+                        })),
+                )
+        };
+
+        let list = match &picker.entries {
+            FolderEntries::Loading => div()
+                .p(px(12.))
+                .text_size(px(12.))
+                .text_color(Hsla::from(editor.text_2))
+                .child("Mappen laden…")
+                .into_any_element(),
+            FolderEntries::Failed(error) => div()
+                .p(px(12.))
+                .text_size(px(12.))
+                .text_color(Hsla::from(theme.red_9))
+                .child(error.clone())
+                .into_any_element(),
+            FolderEntries::NeedsReconnect => div()
+                .p(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(Hsla::from(editor.text_2))
+                        .child("Koppel Google Drive opnieuw om mappen te kunnen kiezen."),
+                )
+                .child(
+                    div()
+                        .id("drive-reconnect")
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(Hsla::from(editor.accent))
+                        .cursor_pointer()
+                        .child("Open Instellingen")
+                        .on_click(|_, _, cx| {
+                            crate::app_windows::open_settings(
+                                crate::settings_window::Page::Integrations,
+                                cx,
+                            )
+                        }),
+                )
+                .into_any_element(),
+            FolderEntries::Loaded(folders) if folders.is_empty() => div()
+                .p(px(12.))
+                .text_size(px(12.))
+                .text_color(Hsla::from(editor.text_2))
+                .child(if picker.searching {
+                    "Geen mappen gevonden"
+                } else {
+                    "Deze map heeft nog geen submappen"
+                })
+                .into_any_element(),
+            FolderEntries::Loaded(folders) => {
+                let mut list = div().flex().flex_col();
+                for (index, folder) in folders.iter().enumerate() {
+                    let selected = picker
+                        .selected
+                        .as_ref()
+                        .is_some_and(|current| current.id == folder.id);
+                    list = list.child(row(
+                        SharedString::from(format!("drive-folder-{index}")),
+                        folder.clone(),
+                        selected,
+                    ));
+                }
+                list.into_any_element()
+            }
+        };
+
+        let mut crumbs = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.))
+            .text_size(px(11.))
+            .text_color(Hsla::from(editor.text_2))
+            .child(
+                div()
+                    .id("drive-crumb-top")
+                    .cursor_pointer()
+                    .when(picker.trail.is_empty(), |this| {
+                        this.font_weight(FontWeight::SEMIBOLD)
+                            .text_color(Hsla::from(editor.text_1))
+                    })
+                    .child("Drive")
+                    .on_click(cx.listener(|this, _, _window, cx| this.drive_trail_back_to(0, cx))),
+            );
+        for (index, folder) in picker.trail.iter().enumerate() {
+            let last = index + 1 == picker.trail.len();
+            crumbs = crumbs.child("›").child(
+                div()
+                    .id(SharedString::from(format!("drive-crumb-{index}")))
+                    .cursor_pointer()
+                    .when(last, |this| {
+                        this.font_weight(FontWeight::SEMIBOLD)
+                            .text_color(Hsla::from(editor.text_1))
+                    })
+                    .child(folder.name.clone())
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.drive_trail_back_to(index + 1, cx)
+                    })),
+            );
+        }
+
+        let team = ui.team_folder.clone();
+        let team_selected = team.as_ref().is_some_and(|team| {
+            ui.drive_folder
+                .as_ref()
+                .is_some_and(|current| current.id == team.id)
+        });
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(
+                    div()
+                        .id("drive-picker-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(scrim)
+                        .occlude()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.close_folder_picker(cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("drive-picker")
+                        .absolute()
+                        .right(px(8.))
+                        .bottom(px(bottom))
+                        .w(px(EXPORT_PANEL_WIDTH))
+                        .h(px(max_height.clamp(200., 460.)))
+                        .occlude()
+                        .flex()
+                        .flex_col()
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(Hsla::from(editor.line))
+                        .bg(Hsla::from(editor.card))
+                        .shadow(vec![gpui::BoxShadow {
+                            color: {
+                                let mut color: Hsla = gpui::black();
+                                color.a = if theme.is_dark() { 0.55 } else { 0.22 };
+                                color
+                            },
+                            offset: gpui::point(px(0.), px(18.)),
+                            blur_radius: px(50.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                        .overflow_hidden()
+                        .text_color(Hsla::from(editor.text_1))
+                        .child(
+                            div()
+                                .flex_none()
+                                .h(px(48.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .pl(px(16.))
+                                .pr(px(12.))
+                                .border_b_1()
+                                .border_color(Hsla::from(editor.line))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Opslaan in Drive"),
+                                )
+                                .child(
+                                    div()
+                                        .id("drive-picker-close")
+                                        .size(px(28.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(7.))
+                                        .cursor_pointer()
+                                        .hover(move |style| style.bg(Hsla::from(editor.ctl)))
+                                        .child(
+                                            svg()
+                                                .path("icons/x.svg")
+                                                .size(px(14.))
+                                                .text_color(Hsla::from(editor.text_2)),
+                                        )
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.close_folder_picker(cx);
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .px(px(16.))
+                                .pt(px(12.))
+                                .pb(px(8.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.))
+                                .when_some(team, |this, team| {
+                                    let choice = team.clone();
+                                    this.child(
+                                        div()
+                                            .id("drive-team-folder")
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .px(px(12.))
+                                            .py(px(10.))
+                                            .rounded(px(10.))
+                                            .border_1()
+                                            .border_color(if team_selected {
+                                                crate::theme::Theme::with_alpha(editor.accent, 0.5)
+                                            } else {
+                                                Hsla::from(editor.line)
+                                            })
+                                            .when(team_selected, |this| {
+                                                this.bg(crate::theme::Theme::with_alpha(
+                                                    editor.accent,
+                                                    0.12,
+                                                ))
+                                            })
+                                            .cursor_pointer()
+                                            .hover(move |style| style.bg(Hsla::from(editor.ctl)))
+                                            .child(
+                                                div()
+                                                    .size(px(30.))
+                                                    .flex_none()
+                                                    .rounded(px(8.))
+                                                    .bg(crate::theme::Theme::with_alpha(
+                                                        editor.accent,
+                                                        0.2,
+                                                    ))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        svg()
+                                                            .path("icons/user-round.svg")
+                                                            .size(px(16.))
+                                                            .text_color(Hsla::from(editor.accent)),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child("Mijn teammap"),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .text_color(Hsla::from(editor.text_2))
+                                                            .truncate()
+                                                            .child(team.path.clone()),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .px(px(7.))
+                                                    .py(px(2.))
+                                                    .rounded_full()
+                                                    .bg(Hsla::from(editor.ctl))
+                                                    .text_size(px(10.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(Hsla::from(editor.text_2))
+                                                    .child("Standaard"),
+                                            )
+                                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                                this.choose_drive_folder(choice.clone(), cx);
+                                            })),
+                                    )
+                                })
+                                .when(ui.team_loading, |this| {
+                                    this.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(Hsla::from(editor.text_2))
+                                            .child("Teammap laden…"),
+                                    )
+                                })
+                                .when_some(ui.team_error.clone(), |this, error| {
+                                    this.child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(Hsla::from(theme.red_9))
+                                            .child(format!("Teammap niet beschikbaar: {error}")),
+                                    )
+                                })
+                                .child(ui::TextInput::plain(
+                                    &theme,
+                                    "drive-folder-search",
+                                    &picker.search_input,
+                                ))
+                                .when(!picker.searching, |this| this.child(crumbs)),
+                        )
+                        .child(
+                            div()
+                                .id("drive-folder-list")
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .px(px(8.))
+                                .when(picker.creating, |this| {
+                                    this.child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .mb(px(2.))
+                                            .p(px(6.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(crate::theme::Theme::with_alpha(
+                                                editor.accent,
+                                                0.45,
+                                            ))
+                                            .bg(crate::theme::Theme::with_alpha(
+                                                editor.accent,
+                                                0.12,
+                                            ))
+                                            .child(div().flex_1().min_w_0().child(
+                                                ui::TextInput::plain(
+                                                    &theme,
+                                                    "drive-new-folder-name",
+                                                    &picker.name_input,
+                                                ),
+                                            ))
+                                            .child(
+                                                div()
+                                                    .id("drive-new-folder-create")
+                                                    .h(px(26.))
+                                                    .px(px(10.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .rounded(px(6.))
+                                                    .bg(Hsla::from(editor.accent))
+                                                    .cursor_pointer()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(gpui::white())
+                                                    .child("Maken")
+                                                    .on_click(cx.listener(
+                                                        |this, _, _window, cx| {
+                                                            let name = this
+                                                                .export
+                                                                .as_ref()
+                                                                .and_then(|ui| {
+                                                                    ui.folder_picker.as_ref()
+                                                                })
+                                                                .map(|picker| {
+                                                                    picker
+                                                                        .name_input
+                                                                        .read(cx)
+                                                                        .text()
+                                                                        .to_string()
+                                                                })
+                                                                .unwrap_or_default();
+                                                            this.create_drive_folder(name, cx);
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                })
+                                .child(list),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(8.))
+                                .px(px(16.))
+                                .pt(px(10.))
+                                .pb(px(12.))
+                                .border_t_1()
+                                .border_color(Hsla::from(editor.line))
+                                .child(
+                                    div()
+                                        .id("drive-new-folder")
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .h(px(32.))
+                                        .px(px(10.))
+                                        .rounded(px(8.))
+                                        .bg(Hsla::from(editor.ctl))
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .when(!can_create, |this| this.opacity(0.5))
+                                        .when(can_create, |this| {
+                                            this.cursor_pointer()
+                                                .hover(move |style| {
+                                                    style.bg(Hsla::from(editor.ctl_hover))
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    if let Some(picker) = this
+                                                        .export
+                                                        .as_mut()
+                                                        .and_then(|ui| ui.folder_picker.as_mut())
+                                                    {
+                                                        picker.creating = true;
+                                                        let input = picker.name_input.clone();
+                                                        input.update(cx, |input, cx| {
+                                                            input.focus_and_select_all(window, cx)
+                                                        });
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                        })
+                                        .child(
+                                            svg()
+                                                .path("icons/plus.svg")
+                                                .size(px(13.))
+                                                .text_color(Hsla::from(editor.text_1)),
+                                        )
+                                        .child("Nieuwe map"),
+                                )
+                                .child(
+                                    div()
+                                        .id("drive-folder-save")
+                                        .min_w_0()
+                                        .h(px(32.))
+                                        .px(px(14.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(8.))
+                                        .bg(Hsla::from(editor.accent))
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(gpui::white())
+                                        .child(div().truncate().child(save_label))
+                                        .when(target.is_none(), |this| this.opacity(0.5))
+                                        .when_some(target, |this, target| {
+                                            this.cursor_pointer()
+                                                .hover(move |style| {
+                                                    style.bg(Hsla::from(editor.accent_2))
+                                                })
+                                                .on_click(cx.listener(
+                                                    move |this, _, _window, cx| {
+                                                        this.choose_drive_folder(
+                                                            target.clone(),
+                                                            cx,
+                                                        );
+                                                    },
+                                                ))
+                                        }),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn close_export_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(ui) = self.export.as_mut() {
+            ui.settings_open = false;
+        }
+        cx.notify();
+    }
+
+    fn restore_export_defaults(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = self.export.as_mut() else {
+            return;
+        };
+        ui.format = ExportFormatKind::Mp4;
+        ui.resolution = ExportResolution::P720;
+        ui.fps = 30;
+        ui.compression = ExportCompression::Maximum;
+        ui.custom_bpp = None;
+        ui.optimize_filesize = false;
+        ui.cursor_only = false;
+        ui.force_ffmpeg = false;
+        if has_transparent_background(&self.project) {
+            ui.format = ExportFormatKind::Gif;
+            if ui.destination == ExportDestination::Link {
+                ui.destination = ExportDestination::File;
+            }
+        }
+        self.normalize_loaded_export_fps();
+        if let Some(ui) = self.export.as_mut() {
+            ui.persist();
+        }
+        self.refresh_export_preview(window, cx);
+        cx.notify();
+    }
+
+    /// "Alle instellingen": every export setting in a card that opens above
+    /// the export panel. `bottom` is the panel's top edge from the window
+    /// bottom and `max_height` what fits between the header and it.
+    pub(crate) fn render_export_settings_popover(
+        &self,
+        bottom: f32,
+        max_height: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let ui = self.export.as_ref()?;
+        if !ui.settings_open || ui.phase.shows_progress() {
+            return None;
+        }
         let theme = self.theme;
         let editor = theme.editor;
         let transparent = has_transparent_background(&self.project);
@@ -1684,46 +2866,649 @@ impl EditorWindow {
         let format_locked = transparent || ui.cursor_only;
         let resolutions = self.export_resolutions(ui);
         let fps_options = self.export_fps_options(ui);
+        let mut scrim: Hsla = gpui::black();
+        scrim.a = if theme.is_dark() { 0.25 } else { 0.08 };
 
-        div()
-            .w(px(SIDEBAR_WIDTH))
-            .flex_shrink_0()
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(
+                    div()
+                        .id("export-settings-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(scrim)
+                        .occlude()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.close_export_settings(cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("export-settings-popover")
+                        .absolute()
+                        .right(px(8.))
+                        .bottom(px(bottom))
+                        .w(px(EXPORT_PANEL_WIDTH))
+                        .max_h(px(max_height.clamp(160., 520.)))
+                        .occlude()
+                        .flex()
+                        .flex_col()
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(Hsla::from(editor.line))
+                        .bg(Hsla::from(editor.card))
+                        .shadow(vec![gpui::BoxShadow {
+                            color: {
+                                let mut color: Hsla = gpui::black();
+                                color.a = if theme.is_dark() { 0.55 } else { 0.22 };
+                                color
+                            },
+                            offset: gpui::point(px(0.), px(18.)),
+                            blur_radius: px(50.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                        .overflow_hidden()
+                        .text_color(Hsla::from(editor.text_1))
+                        .child(
+                            div()
+                                .flex_none()
+                                .h(px(48.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .pl(px(16.))
+                                .pr(px(12.))
+                                .border_b_1()
+                                .border_color(Hsla::from(editor.line))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Exportinstellingen"),
+                                )
+                                .child(
+                                    div()
+                                        .id("export-settings-close")
+                                        .size(px(28.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(7.))
+                                        .cursor_pointer()
+                                        .hover(move |style| style.bg(Hsla::from(editor.ctl)))
+                                        .child(
+                                            svg()
+                                                .path("icons/x.svg")
+                                                .size(px(14.))
+                                                .text_color(Hsla::from(editor.text_2)),
+                                        )
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.close_export_settings(cx);
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("export-settings")
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .px(px(16.))
+                                .py(px(14.))
+                                .gap(px(16.))
+                                .child(self.export_destination_notes(ui, link_disabled, cx))
+                                .child(self.export_format_field(ui, format_locked, cx))
+                                .child(self.export_resolution_field(ui, &resolutions, cx))
+                                .child(self.export_fps_field(ui, fps_options, cx))
+                                .when(
+                                    ui.format == ExportFormatKind::Mp4 && !ui.cursor_only,
+                                    |this| this.child(self.export_quality_field(ui, cx)),
+                                )
+                                .child(div().h(px(1.)).flex_none().bg(Hsla::from(editor.line)))
+                                .child(self.export_advanced(ui, cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .px(px(16.))
+                                .pt(px(10.))
+                                .pb(px(12.))
+                                .border_t_1()
+                                .border_color(Hsla::from(editor.line))
+                                .child(
+                                    div()
+                                        .id("export-settings-defaults")
+                                        .text_size(px(12.))
+                                        .text_color(Hsla::from(editor.text_2))
+                                        .cursor_pointer()
+                                        .hover(move |style| {
+                                            style.text_color(Hsla::from(editor.text_1))
+                                        })
+                                        .child("Standaard herstellen")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.restore_export_defaults(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("export-settings-done")
+                                        .h(px(32.))
+                                        .px(px(18.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(8.))
+                                        .bg(Hsla::from(editor.accent))
+                                        .hover(move |style| style.bg(Hsla::from(editor.accent_2)))
+                                        .cursor_pointer()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(gpui::white())
+                                        .child("Klaar")
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.close_export_settings(cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The export panel in the editor's bottom-right corner: destination and
+    /// the action always in view, the settings scrolling between them, and the
+    /// running or finished export taking the settings' place.
+    pub(crate) fn render_export_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme;
+        let editor = theme.editor;
+        let card = div()
+            .id("export-panel")
+            .relative()
+            .w(px(EXPORT_PANEL_WIDTH))
+            .flex_none()
             .h_full()
             .flex()
             .flex_col()
-            .bg(Hsla::from(editor.card))
-            .border_l_1()
-            .border_color(Hsla::from(editor.line))
-            .child(
+            .rounded(px(12.))
+            .border_1()
+            .border_color(self.card_line())
+            .bg(self.panel_bg())
+            .shadow(editor.card_shadow())
+            .overflow_hidden()
+            .text_color(Hsla::from(editor.text_1));
+
+        let Some(ui) = self.export.as_ref() else {
+            return card.child(
                 div()
-                    .id("export-settings")
+                    .p(px(12.))
                     .flex()
                     .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .p(px(16.))
-                    .gap(px(20.))
-                    .child(self.export_destination_field(ui, link_disabled, cx))
-                    .child(self.export_format_field(ui, format_locked, cx))
-                    .child(self.export_resolution_field(ui, &resolutions, cx))
-                    .child(self.export_fps_field(ui, fps_options, cx))
-                    .when(
-                        ui.format == ExportFormatKind::Mp4 && !ui.cursor_only,
-                        |this| this.child(self.export_quality_field(ui, cx)),
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Exporteren"),
                     )
-                    .child(div().h(px(1.)).flex_none().bg(Hsla::from(editor.line)))
-                    .child(self.export_advanced(ui, cx)),
-            )
-            .child(
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(Hsla::from(editor.text_2))
+                            .child("Opname wordt geladen…"),
+                    ),
+            );
+        };
+
+        let link_disabled = has_transparent_background(&self.project) || ui.cursor_only;
+        let show_settings = !ui.phase.shows_progress();
+        let estimate = match &ui.preview_stats {
+            Some(stats) => format!("≈ {:.0} MB", stats.estimated_size_mb.max(1.)),
+            None => "Grootte wordt berekend…".to_string(),
+        };
+
+        card.child(
+            div()
+                .flex_none()
+                .px(px(12.))
+                .pt(px(12.))
+                .pb(px(10.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .border_b_1()
+                .border_color(Hsla::from(editor.line))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(
+                                    svg()
+                                        .path("icons/upload-arrow.svg")
+                                        .size(px(14.))
+                                        .text_color(Hsla::from(editor.text_2)),
+                                )
+                                .child("Exporteren"),
+                        )
+                        .when(show_settings, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(Hsla::from(editor.text_2))
+                                    .child(estimate),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .when(ui.phase.is_busy(), |this| this.opacity(0.5))
+                        .child(self.export_destination_switch(ui, link_disabled, cx)),
+                ),
+        )
+        .when(show_settings, |this| {
+            this.child(self.render_export_overview(ui, cx)).child(
                 div()
-                    .px(px(16.))
-                    .pt(px(12.))
-                    .pb(px(16.))
+                    .flex_none()
+                    .px(px(12.))
+                    .pt(px(10.))
+                    .pb(px(12.))
                     .border_t_1()
                     .border_color(Hsla::from(editor.line))
                     .child(self.export_cta(ui, cx)),
             )
+        })
+        .when(!show_settings, |this| {
+            this.child(self.render_export_status(ui))
+                .child(self.render_export_status_actions(ui, cx))
+        })
+        .when(ui.phase == ExportPhase::ChoosingFile, |this| {
+            this.child(div().absolute().inset_0().occlude())
+        })
+    }
+
+    /// The Bits per pixel slider's window-wide drag layer: gpui has no pointer
+    /// capture, so the drag would end the moment the pointer left the track.
+    pub(crate) fn render_export_drag_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        self.export.as_ref().filter(|ui| ui.bpp_dragging)?;
+        Some(ui::Slider::drag_layer(
+            "export-bpp-drag",
+            cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                this.export_bpp_drag_to(event.position.x, cx);
+            }),
+            cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                this.export_bpp_mouse_up(window, cx);
+            }),
+        ))
+    }
+
+    fn export_heading(&self, ui: &ExportUi) -> &'static str {
+        match ui.phase {
+            ExportPhase::Starting => "Export voorbereiden",
+            ExportPhase::Rendering if ui.cursor_only => "Cursorspoor renderen",
+            ExportPhase::Rendering if ui.format == ExportFormatKind::Gif => "GIF renderen",
+            ExportPhase::Rendering => "Video renderen",
+            ExportPhase::Copying if ui.destination == ExportDestination::Clipboard => {
+                "Kopiëren naar klembord"
+            }
+            ExportPhase::Copying => "Opslaan als bestand",
+            ExportPhase::Uploading if crate::direct_drive::enabled() => "Uploaden naar Drive",
+            ExportPhase::Uploading if ui.reuploading => "Opnieuw uploaden naar je link",
+            ExportPhase::Uploading => "Deelbare link maken",
+            ExportPhase::Done if ui.destination == ExportDestination::Clipboard => {
+                "Gekopieerd naar klembord"
+            }
+            ExportPhase::Done if ui.destination == ExportDestination::Link && ui.reuploading => {
+                "Opnieuw uploaden voltooid"
+            }
+            ExportPhase::Done
+                if ui.destination == ExportDestination::Link && crate::direct_drive::enabled() =>
+            {
+                "Opname staat veilig in Drive"
+            }
+            ExportPhase::Done if ui.destination == ExportDestination::Link => "Upload voltooid",
+            ExportPhase::Done => "Opgeslagen als bestand",
+            ExportPhase::Failed if ui.clipboard_retry_path().is_some() => {
+                "Export klaar, kopiëren mislukt"
+            }
+            ExportPhase::Failed => "Export mislukt",
+            ExportPhase::Idle | ExportPhase::ChoosingFile => "",
+        }
+    }
+
+    fn render_export_status(&self, ui: &ExportUi) -> impl IntoElement {
+        let theme = self.theme;
+        let editor = theme.editor;
+        let fraction = if ui.phase == ExportPhase::Uploading {
+            Some(ui.upload_progress.clamp(0.0, 1.0))
+        } else if ui.total_frames == 0 {
+            None
+        } else {
+            Some((ui.rendered as f32 / ui.total_frames as f32).clamp(0.0, 1.0))
+        };
+        let busy = ui.phase.is_busy();
+        let done = ui.phase == ExportPhase::Done;
+        let detail = match ui.phase {
+            ExportPhase::Rendering if ui.total_frames > 0 => {
+                Some(format!("{} van {} frames", ui.rendered, ui.total_frames))
+            }
+            ExportPhase::Done if ui.destination == ExportDestination::Link => Some(
+                if crate::direct_drive::enabled() {
+                    "Privé in je Drive. Deel hem via Google Drive als je wilt."
+                } else if ui.reuploading {
+                    "Je nieuwste versie staat op dezelfde link"
+                } else {
+                    "Je opname is geüpload"
+                }
+                .to_string(),
+            ),
+            ExportPhase::Done => ui
+                .output_path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned()),
+            _ if busy && crate::direct_drive::enabled() => {
+                Some("Je kunt gewoon verder kijken. Annuleren mag altijd.".to_string())
+            }
+            _ => None,
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .justify_center()
+            .gap(px(10.))
+            .px(px(16.))
+            .when(done, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .size(px(36.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(Hsla::from(editor.accent))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    svg()
+                                        .path("icons/check.svg")
+                                        .size(px(18.))
+                                        .text_color(gpui::white()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .min_w_0()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(self.export_heading(ui)),
+                                )
+                                .children(detail.clone().map(|detail| {
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(Hsla::from(editor.text_2))
+                                        .truncate()
+                                        .child(detail)
+                                })),
+                        ),
+                )
+            })
+            .when(!done, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(self.export_heading(ui)),
+                        )
+                        .children(fraction.filter(|_| busy).map(|fraction| {
+                            div()
+                                .text_size(px(12.))
+                                .text_color(Hsla::from(editor.text_2))
+                                .child(format!("{:.0}%", fraction * 100.))
+                        })),
+                )
+                .when(busy, |this| {
+                    this.child(
+                        div()
+                            .h(px(6.))
+                            .w_full()
+                            .rounded_full()
+                            .bg(Hsla::from(editor.ctl))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(Hsla::from(editor.accent))
+                                    .w(gpui::relative(fraction.unwrap_or(0.08).max(0.02))),
+                            ),
+                    )
+                })
+                .children(detail.map(|detail| {
+                    div()
+                        .text_size(px(12.))
+                        .text_color(Hsla::from(editor.text_2))
+                        .child(detail)
+                }))
+                .when_some(ui.error.clone(), |this, error| {
+                    this.child(
+                        div()
+                            .id("export-error")
+                            .max_h(px(64.))
+                            .overflow_y_scroll()
+                            .text_size(px(12.))
+                            .text_color(Hsla::from(theme.red_9))
+                            .child(error),
+                    )
+                })
+            })
+    }
+
+    fn render_export_status_actions(
+        &self,
+        ui: &ExportUi,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = self.theme;
+        let editor = theme.editor;
+        let busy = ui.phase.is_busy();
+        let finished = matches!(ui.phase, ExportPhase::Done | ExportPhase::Failed);
+        let button = |id: &'static str, label: &'static str, primary: bool| {
+            let (bg, hover, text) = if primary {
+                (
+                    Hsla::from(editor.accent),
+                    Hsla::from(editor.accent_2),
+                    gpui::white(),
+                )
+            } else {
+                (
+                    Hsla::from(editor.ctl),
+                    Hsla::from(editor.ctl_hover),
+                    Hsla::from(editor.text_1),
+                )
+            };
+            div()
+                .id(id)
+                .tab_index(0)
+                .flex_1()
+                .min_w_0()
+                .h(px(40.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(10.))
+                .bg(bg)
+                .text_size(px(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(text)
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover))
+                .child(label)
+        };
+
+        div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .gap(px(8.))
+            .px(px(12.))
+            .pt(px(10.))
+            .pb(px(12.))
+            .border_t_1()
+            .border_color(Hsla::from(editor.line))
+            .when(busy, |this| {
+                this.child(
+                    button("export-cancel", "Annuleren", false).on_click(cx.listener(
+                        |this, _, window, cx| {
+                            this.request_cancel_export(window, cx);
+                        },
+                    )),
+                )
+            })
+            .when(finished && ui.clipboard_retry_path().is_some(), |this| {
+                this.child(
+                    button("export-retry-copy", "Opnieuw kopiëren", true).on_click(cx.listener(
+                        |this, _, window, cx| {
+                            this.retry_clipboard_copy(window, cx);
+                        },
+                    )),
+                )
+            })
+            .when(
+                ui.phase == ExportPhase::Done && ui.destination == ExportDestination::File,
+                |this| {
+                    let path = ui.output_path.clone();
+                    this.child(button("export-open-file", "Bestand openen", true).on_click(
+                        move |_, _, _| {
+                            if let Some(path) = &path {
+                                library::open_path(path);
+                            }
+                        },
+                    ))
+                },
+            )
+            .when(
+                ui.phase == ExportPhase::Done
+                    && ui.destination == ExportDestination::Link
+                    && ui.share_link.is_some(),
+                |this| {
+                    let open = ui.share_link.clone().unwrap_or_default();
+                    this.child(
+                        button(
+                            "export-copy-link",
+                            if ui.copy_link_pressed {
+                                "Link gekopieerd"
+                            } else {
+                                "Link kopiëren"
+                            },
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.copy_share_link(window, cx);
+                        })),
+                    )
+                    .child(
+                        button("export-open-link", "Openen", false).on_click(move |_, _, cx| {
+                            cx.open_url(&open);
+                        }),
+                    )
+                },
+            )
+            .when(finished, |this| {
+                this.child(
+                    button("export-new", "Nieuwe export", false).on_click(cx.listener(
+                        |this, _, _window, cx| {
+                            this.reset_export(cx);
+                        },
+                    )),
+                )
+            })
+    }
+
+    fn request_cancel_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = self.export.as_mut() else {
+            return;
+        };
+        let cancel = ui.cancel.clone();
+        #[cfg(target_os = "linux")]
+        {
+            if !ui.phase.is_busy() {
+                return;
+            }
+            let response = crate::editor_modal::confirm_cancel_export(window, cx);
+            cx.spawn_in(window, async move |this, cx| {
+                let confirmed = response.await;
+                let _ = this.update_in(cx, |this, _, cx| {
+                    if let Some(ui) = this.export.as_mut()
+                        && ui.phase.is_busy()
+                    {
+                        cancel_matching_export(&ui.cancel, &cancel, confirmed);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        #[cfg(not(target_os = "linux"))]
+        cx.spawn_in(window, async move |this, cx| {
+            let confirmed = platform::confirm_dialog(
+                "Export annuleren?",
+                "Weet je zeker dat je de export wilt annuleren?",
+                "Export annuleren",
+                "Doorgaan",
+                true,
+            );
+            let _ = this.update(cx, |this, cx| {
+                if let Some(ui) = this.export.as_mut() {
+                    cancel_matching_export(&ui.cancel, &cancel, confirmed);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn export_cta(&self, ui: &ExportUi, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1732,26 +3517,28 @@ impl EditorWindow {
         let signed_in = !ui.auth_rejected && store::auth_snapshot().signed_in();
         let sign_in_pending = SignIn::global(cx).read(cx).is_pending();
         let (label, icon, primary) = match ui.destination {
-            ExportDestination::File => ("Export to File", Some("icons/folder.svg"), true),
-            ExportDestination::Clipboard => ("Export to Clipboard", Some("icons/copy.svg"), true),
+            ExportDestination::File => ("Exporteren naar bestand", Some("icons/folder.svg"), true),
+            ExportDestination::Clipboard => {
+                ("Kopiëren naar klembord", Some("icons/copy.svg"), true)
+            }
             ExportDestination::Link if crate::direct_drive::enabled() => (
                 if cap_direct_drive::is_connected() {
-                    "Upload to Google Drive"
+                    "Uploaden naar Drive"
                 } else {
-                    "Connect Google Drive in Settings"
+                    "Koppel Google Drive in Instellingen"
                 },
                 Some("icons/link.svg"),
                 true,
             ),
-            ExportDestination::Link if sign_in_pending => ("Cancel Sign In", None, false),
+            ExportDestination::Link if sign_in_pending => ("Inloggen annuleren", None, false),
             ExportDestination::Link if !signed_in => {
-                ("Sign in to share", Some("icons/link.svg"), true)
+                ("Log in om te delen", Some("icons/link.svg"), true)
             }
             ExportDestination::Link => (
                 if self.sharing.is_some() {
-                    "Reupload to same link"
+                    "Opnieuw uploaden naar dezelfde link"
                 } else {
-                    "Create shareable link"
+                    "Deelbare link maken"
                 },
                 Some("icons/link.svg"),
                 true,
@@ -1813,70 +3600,85 @@ impl EditorWindow {
             .gap(px(8.))
     }
 
-    fn export_destination_field(
+    fn export_destination_switch(
         &self,
         ui: &ExportUi,
         link_disabled: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = self.theme;
-        let editor = theme.editor;
-        self.export_section("Destination", "icons/upload-arrow.svg")
-            .child(
-                ui::SegmentedControl::editor(
-                    &theme,
-                    "export-destination",
-                    ExportDestination::ALL
-                        .iter()
-                        .map(|dest| {
-                            let label = if *dest == ExportDestination::Link && crate::direct_drive::enabled() {
-                                "Google Drive"
-                            } else if *dest == ExportDestination::Link
-                                && self.sharing.is_some()
-                            {
-                                "Reupload"
+        div().w_full().child(
+            ui::SegmentedControl::editor(
+                &theme,
+                "export-destination",
+                ExportDestination::ALL
+                    .iter()
+                    .map(|dest| {
+                        let label =
+                            if *dest == ExportDestination::Link && crate::direct_drive::enabled() {
+                                "Drive"
+                            } else if *dest == ExportDestination::Link && self.sharing.is_some() {
+                                "Opnieuw uploaden"
                             } else {
                                 dest.label()
                             };
-                            let mut option =
-                                ui::SegmentOption::new(label, ui.destination == *dest)
-                                    .disabled(*dest == ExportDestination::Link && link_disabled);
-                            option.icon = Some(dest.icon().into());
-                            option
-                        })
-                        .collect(),
-                )
-                .stretch()
-                .item_height(px(30.))
-                .on_select(cx.listener(|this, index: &usize, window, cx| {
-                    let Some(dest) = ui::option_at(ExportDestination::ALL, *index) else {
-                        return;
-                    };
-                    if let Some(ui) = this.export.as_mut() {
-                        if dest == ExportDestination::Link
-                            && (has_transparent_background(&this.project) || ui.cursor_only)
-                        {
-                            return;
-                        }
-                        ui.destination = dest;
-                        if dest == ExportDestination::Link && ui.format == ExportFormatKind::Gif {
-                            ui.format = ExportFormatKind::Mp4;
-                        }
-                        ui.persist();
-                    }
-                    this.refresh_export_preview(window, cx);
-                    cx.notify();
-                })),
+                        let mut option = ui::SegmentOption::new(label, ui.destination == *dest)
+                            .disabled(*dest == ExportDestination::Link && link_disabled);
+                        option.icon = Some(dest.icon().into());
+                        option
+                    })
+                    .collect(),
             )
+            .stretch()
+            .item_height(px(30.))
+            .on_select(cx.listener(|this, index: &usize, window, cx| {
+                let Some(dest) = ui::option_at(ExportDestination::ALL, *index) else {
+                    return;
+                };
+                if let Some(ui) = this.export.as_mut() {
+                    if ui.phase.is_busy() {
+                        return;
+                    }
+                    ui.phase = ExportPhase::Idle;
+                    ui.error = None;
+                    ui.copy_link_pressed = false;
+                    if dest == ExportDestination::Link
+                        && (has_transparent_background(&this.project) || ui.cursor_only)
+                    {
+                        return;
+                    }
+                    ui.destination = dest;
+                    if dest == ExportDestination::Link && ui.format == ExportFormatKind::Gif {
+                        ui.format = ExportFormatKind::Mp4;
+                    }
+                    ui.persist();
+                }
+                this.refresh_export_preview(window, cx);
+                cx.notify();
+            })),
+        )
+    }
+
+    fn export_destination_notes(
+        &self,
+        ui: &ExportUi,
+        link_disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let editor = self.theme.editor;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
             .when(link_disabled, |field| {
                 field.child(
                     div()
                         .text_size(px(11.))
                         .text_color(Hsla::from(editor.text_3))
                         .child(if ui.cursor_only {
-                            "Cursor-only exports can only be saved to a file or clipboard."
+                            "Een export van alleen de cursor kan alleen naar een bestand of het klembord."
                         } else {
-                            "Transparent exports can only be saved to a file or clipboard."
+                            "Een transparante export kan alleen naar een bestand of het klembord."
                         }),
                 )
             })
@@ -2006,7 +3808,7 @@ impl EditorWindow {
     ) -> impl IntoElement {
         let theme = self.theme;
         let options = [ExportFormatKind::Mp4, ExportFormatKind::Gif];
-        self.export_section("Format", "icons/video.svg")
+        self.export_section("Formaat", "icons/video.svg")
             .disabled(locked)
             .child(
                 ui::SegmentedControl::editor(
@@ -2058,7 +3860,7 @@ impl EditorWindow {
     ) -> impl IntoElement {
         let theme = self.theme;
         let resolutions = resolutions.to_vec();
-        self.export_section("Resolution", "icons/monitor-outline.svg")
+        self.export_section("Resolutie", "icons/monitor-outline.svg")
             .child(
                 ui::SegmentedControl::editor(
                     &theme,
@@ -2092,7 +3894,7 @@ impl EditorWindow {
     ) -> impl IntoElement {
         let theme = self.theme;
         let options = options.to_vec();
-        self.export_section("Frame rate", "icons/gauge.svg").child(
+        self.export_section("Framerate", "icons/gauge.svg").child(
             ui::SegmentedControl::editor(
                 &theme,
                 "export-fps",
@@ -2120,7 +3922,7 @@ impl EditorWindow {
     fn export_quality_field(&self, ui: &ExportUi, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let editor = theme.editor;
-        self.export_section("Quality", "icons/gem.svg")
+        self.export_section("Kwaliteit", "icons/gem.svg")
             .child(
                 ui::SegmentedControl::editor(
                     &theme,
@@ -2158,8 +3960,8 @@ impl EditorWindow {
                     .px(px(2.))
                     .text_size(px(10.5))
                     .text_color(Hsla::from(editor.text_3))
-                    .child("Smaller file")
-                    .child("Larger file"),
+                    .child("Kleiner bestand")
+                    .child("Groter bestand"),
             )
             .child(self.export_optimize_row(ui, cx))
     }
@@ -2207,7 +4009,7 @@ impl EditorWindow {
     fn export_optimize_row(&self, ui: &ExportUi, cx: &mut Context<Self>) -> impl IntoElement {
         self.export_toggle_row(
             "export-optimize",
-            "Optimize file size",
+            "Bestandsgrootte optimaliseren",
             "Re-encodes with software for much smaller files (slower)",
             ui.optimize_filesize,
             cx.listener(|this, _, window, cx| {
@@ -2262,7 +4064,7 @@ impl EditorWindow {
                             .size(px(14.))
                             .text_color(Hsla::from(editor.text_2)),
                     )
-                    .child("Advanced")
+                    .child("Geavanceerd")
                     .child(
                         svg()
                             .path(if ui.advanced_open {
@@ -2278,7 +4080,7 @@ impl EditorWindow {
             .when(ui.advanced_open, |this| {
                 this.child(self.export_toggle_row(
                     "export-cursor-only",
-                    "Export cursor only",
+                    "Alleen cursor exporteren",
                     "Keeps the same cursor motion and clicks on a transparent background",
                     ui.cursor_only,
                     cx.listener(|this, _, window, cx| {
@@ -2388,14 +4190,14 @@ impl EditorWindow {
                             div()
                                 .text_size(px(11.))
                                 .text_color(Hsla::from(editor.text_3))
-                                .child("Using a custom bitrate"),
+                                .child("Eigen bitrate in gebruik"),
                         )
                     })
                 })
                 .when(cfg!(target_os = "macos") && show_bpp, |this| {
                     this.child(self.export_toggle_row(
                         "export-force-ffmpeg",
-                        "Force FFmpeg decoder",
+                        "FFmpeg-decoder forceren",
                         "Skip hardware decoder (auto-fallback enabled)",
                         ui.force_ffmpeg,
                         cx.listener(|this, _, window, cx| {
@@ -2460,287 +4262,6 @@ impl EditorWindow {
         self.refresh_export_preview(window, cx);
         cx.notify();
     }
-
-    fn render_export_overlay(&self, ui: &ExportUi, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.theme;
-        let editor = theme.editor;
-        let fraction = if ui.phase == ExportPhase::Uploading {
-            Some(ui.upload_progress.clamp(0.0, 1.0))
-        } else if ui.total_frames == 0 {
-            None
-        } else {
-            Some(ui.rendered as f32 / ui.total_frames as f32)
-        };
-        let heading = match ui.phase {
-            ExportPhase::Starting => "Preparing export",
-            ExportPhase::Rendering if ui.cursor_only => "Rendering cursor track",
-            ExportPhase::Rendering if ui.format == ExportFormatKind::Gif => "Rendering GIF",
-            ExportPhase::Rendering => "Rendering video",
-            ExportPhase::Copying if ui.destination == ExportDestination::Clipboard => {
-                "Copying to clipboard"
-            }
-            ExportPhase::Copying => "Saving to file",
-            ExportPhase::Uploading if crate::direct_drive::enabled() => "Uploading to Google Drive",
-            ExportPhase::Uploading if ui.reuploading => "Reuploading to your link",
-            ExportPhase::Uploading => "Creating shareable link",
-            ExportPhase::Done if ui.destination == ExportDestination::Clipboard => {
-                "Copied to clipboard"
-            }
-            ExportPhase::Done if ui.destination == ExportDestination::Link && ui.reuploading => {
-                "Reupload complete"
-            }
-            ExportPhase::Done if ui.destination == ExportDestination::Link => "Upload complete",
-            ExportPhase::Done => "Export complete",
-            ExportPhase::Failed if ui.clipboard_retry_path().is_some() => {
-                "Export complete; clipboard copy failed"
-            }
-            ExportPhase::Failed => "Export failed",
-            ExportPhase::Idle | ExportPhase::ChoosingFile => "",
-        };
-
-        let mut wash: Hsla = editor.window.into();
-        wash.a = 0.94;
-
-        div()
-            .absolute()
-            .inset_0()
-            .occlude()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(16.))
-            .bg(wash)
-            .text_color(Hsla::from(editor.text_1))
-            .child({
-                let ring = ui::CircularProgress::new(
-                    px(80.),
-                    px(6.),
-                    Hsla::from(editor.ctl_active),
-                    Hsla::from(editor.accent),
-                )
-                .label(Hsla::from(editor.text_1), px(14.));
-                if let Some(fraction) = fraction {
-                    ring.progress(fraction)
-                } else {
-                    ring.indeterminate()
-                }
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(heading),
-                    )
-                    .when(
-                        ui.phase == ExportPhase::Done
-                            && ui.destination == ExportDestination::Link,
-                        |this| {
-                            this.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(Hsla::from(editor.text_2))
-                                    .child(if ui.reuploading {
-                                        "Your latest edit is ready at the same link"
-                                    } else {
-                                        "Your Cap has been uploaded successfully"
-                                    }),
-                            )
-                        },
-                    ),
-            )
-            .when(ui.phase == ExportPhase::Rendering && ui.total_frames > 0, |this| {
-                this.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(Hsla::from(editor.text_2))
-                        .child(format!("{} / {} frames", ui.rendered, ui.total_frames)),
-                )
-            })
-            .when_some(ui.error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .max_w(px(360.))
-                        .text_size(px(12.))
-                        .text_color(Hsla::from(theme.red_9))
-                        .text_center()
-                        .child(error),
-                )
-            })
-            .when(ui.phase.is_busy(), |this| {
-                this.child(
-                    ui::Button::plain(
-                        &theme,
-                        "export-cancel",
-                        ui::ButtonVariant::Gray,
-                        ui::ButtonSize::Md,
-                    )
-                    .label("Cancel")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let Some(ui) = this.export.as_mut() else {
-                            return;
-                        };
-                        let cancel = ui.cancel.clone();
-                        #[cfg(target_os = "linux")]
-                        {
-                            if !ui.phase.is_busy() {
-                                return;
-                            }
-                            let response = crate::editor_modal::confirm_cancel_export(window, cx);
-                            cx.spawn_in(window, async move |this, cx| {
-                                let confirmed = response.await;
-                                let _ = this.update_in(cx, |this, _, cx| {
-                                    if let Some(ui) = this.export.as_mut()
-                                        && ui.phase.is_busy()
-                                    {
-                                        cancel_matching_export(&ui.cancel, &cancel, confirmed);
-                                    }
-                                    cx.notify();
-                                });
-                            })
-                            .detach();
-                        }
-                        #[cfg(not(target_os = "linux"))]
-                        cx.spawn_in(window, async move |this, cx| {
-                            let confirmed = platform::confirm_dialog(
-                                "Cancel export?",
-                                "Are you sure you want to cancel the export?",
-                                "Cancel export",
-                                "Keep exporting",
-                                true,
-                            );
-                            let _ = this.update(cx, |this, cx| {
-                                if let Some(ui) = this.export.as_mut() {
-                                    cancel_matching_export(&ui.cancel, &cancel, confirmed);
-                                }
-                                cx.notify();
-                            });
-                        })
-                        .detach();
-                    })),
-                )
-                .child(
-                    div()
-                        .max_w(px(320.))
-                        .text_size(px(12.))
-                        .text_color(Hsla::from(editor.text_2))
-                        .text_center()
-                        .child(
-                            if crate::direct_drive::enabled() {
-                                "Your video stays private. Open its Drive link and use Share to grant people access."
-                            } else {
-                                "Use Instant Mode for your next recording if you want a link the moment you stop."
-                            },
-                        ),
-                )
-            })
-            .when(ui.phase == ExportPhase::Done || ui.phase == ExportPhase::Failed, |this| {
-                this.when(ui.clipboard_retry_path().is_some(), |this| {
-                    this.child(
-                        ui::Button::plain(
-                            &theme,
-                            "export-retry-copy",
-                            ui::ButtonVariant::Gray,
-                            ui::ButtonSize::Md,
-                        )
-                        .icon("icons/copy.svg")
-                        .label("Retry Copy")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.retry_clipboard_copy(window, cx);
-                        })),
-                    )
-                })
-                .when(
-                    (ui.phase == ExportPhase::Done && ui.destination == ExportDestination::File)
-                        || ui.clipboard_retry_path().is_some(),
-                    |this| {
-                        let path = ui.output_path.clone();
-                        this.child(
-                            ui::Button::plain(
-                                &theme,
-                                "export-open-file",
-                                ui::ButtonVariant::Gray,
-                                ui::ButtonSize::Md,
-                            )
-                            .label("Open File")
-                            .on_click(move |_, _, _| {
-                                if let Some(path) = &path {
-                                    library::open_path(path);
-                                }
-                            }),
-                        )
-                    },
-                )
-                .when(
-                    ui.phase == ExportPhase::Done
-                        && ui.destination == ExportDestination::Link
-                        && ui.share_link.is_some(),
-                    |this| {
-                        let copied = ui.copy_link_pressed;
-                        let open = ui.share_link.clone().unwrap_or_default();
-                        this.child(
-                            ui::Button::plain(
-                                &theme,
-                                "export-copy-link",
-                                ui::ButtonVariant::Gray,
-                                ui::ButtonSize::Md,
-                            )
-                            .icon(if copied {
-                                "icons/check.svg"
-                            } else {
-                                "icons/copy.svg"
-                            })
-                            .label(if copied { "Link copied" } else { "Copy link" })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.copy_share_link(window, cx);
-                            })),
-                        )
-                        .child(
-                            ui::Button::plain(
-                                &theme,
-                                "export-open-link",
-                                ui::ButtonVariant::Primary,
-                                ui::ButtonSize::Md,
-                            )
-                            .icon("icons/link.svg")
-                            .label("Open link")
-                            .on_click(move |_, _, cx| {
-                                cx.open_url(&open);
-                            }),
-                        )
-                    },
-                )
-                .child(
-                    ui::Button::plain(
-                        &theme,
-                        "export-back-done",
-                        ui::ButtonVariant::Gray,
-                        ui::ButtonSize::Md,
-                    )
-                    .label("Back to editor")
-                    .on_click(cx.listener(|this, _, window, cx| this.close_export(window, cx))),
-                )
-            })
-    }
-}
-
-/// The largest box of the preview's aspect that fits the stage, so the frame's
-/// rounded corners and shadow hug the picture instead of a letterboxed pane.
-fn preview_fit(avail_w: f32, avail_h: f32, image: Option<(f32, f32)>) -> (f32, f32) {
-    let avail_w = avail_w.max(120.);
-    let avail_h = avail_h.max(68.);
-    let (iw, ih) = match image {
-        Some((w, h)) if w > 0. && h > 0. => (w, h),
-        _ => (16., 9.),
-    };
-    let scale = (avail_w / iw).min(avail_h / ih);
-    ((iw * scale).floor(), (ih * scale).floor())
 }
 
 async fn confirm_export_resources(
@@ -2872,48 +4393,6 @@ fn show_upload_failure(
     }
 }
 
-fn export_stat(
-    theme: &crate::theme::Theme,
-    label: &'static str,
-    value: Option<String>,
-    divided: bool,
-) -> impl IntoElement {
-    let editor = theme.editor;
-    div()
-        .flex()
-        .flex_1()
-        .flex_col()
-        .justify_center()
-        .px(px(16.))
-        .gap(px(1.))
-        .when(divided, |this| {
-            this.border_l_1().border_color(Hsla::from(editor.line))
-        })
-        .child(
-            div()
-                .text_size(px(10.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(Hsla::from(editor.text_3))
-                .child(label),
-        )
-        .child(match value {
-            Some(value) => div()
-                .text_size(px(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(Hsla::from(editor.text_1))
-                .whitespace_nowrap()
-                .child(value)
-                .into_any_element(),
-            None => div()
-                .my(px(3.))
-                .h(px(12.))
-                .w(px(56.))
-                .rounded(px(4.))
-                .bg(Hsla::from(editor.ctl_active))
-                .into_any_element(),
-        })
-}
-
 fn matches_compression(current: ExportCompression, expected: ExportCompression) -> bool {
     std::mem::discriminant(&current) == std::mem::discriminant(&expected)
 }
@@ -3042,6 +4521,8 @@ mod tests {
             force_ffmpeg_decoder: false,
             advanced_open: false,
             organization_id: None,
+            drive_folder_id: None,
+            drive_folder_path: None,
         })
     }
 
@@ -3051,11 +4532,11 @@ mod tests {
             for (title, expected) in [
                 ("Sprint 1/2", "Sprint 12"),
                 (r#"a/b\c:d*e?f"g<h>i|j"#, "abcdefghij"),
-                ("\0\n", "Cap Recording"),
-                ("/\\:*?\"<>|", "Cap Recording"),
-                ("...", "Cap Recording"),
-                ("   ", "Cap Recording"),
-                ("CON", "Cap Recording"),
+                ("\0\n", "Kiekes Recording"),
+                ("/\\:*?\"<>|", "Kiekes Recording"),
+                ("...", "Kiekes Recording"),
+                ("   ", "Kiekes Recording"),
+                ("CON", "Kiekes Recording"),
                 ("Clip final. ", "Clip final"),
                 ("My Clip 2026", "My Clip 2026"),
                 ("你好 🎬", "你好 🎬"),
