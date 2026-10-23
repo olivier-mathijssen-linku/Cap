@@ -789,6 +789,19 @@ impl EditorWindow {
             return;
         }
         if ui.destination == ExportDestination::Link {
+            if crate::direct_drive::enabled() {
+                if !cap_direct_drive::is_connected() {
+                    cx.defer(|cx| {
+                        crate::app_windows::open_settings(
+                            crate::settings_window::Page::Integrations,
+                            cx,
+                        )
+                    });
+                    return;
+                }
+                self.start_link_export(window, cx);
+                return;
+            }
             let sign_in = SignIn::global(cx);
             if sign_in.read(cx).is_pending() {
                 sign_in.update(cx, |sign_in, cx| sign_in.cancel(cx));
@@ -1081,7 +1094,7 @@ impl EditorWindow {
         }
 
         let upgraded = store::auth_snapshot().is_upgraded();
-        if !upgraded && duration >= 300.0 {
+        if !crate::direct_drive::enabled() && !upgraded && duration >= 300.0 {
             cx.open_url(crate::auth::PRICING_URL);
             return;
         }
@@ -1116,7 +1129,7 @@ impl EditorWindow {
         ui.cancel = Arc::new(AtomicBool::new(false));
         let cancel = ui.cancel.clone();
         ui.phase = ExportPhase::Starting;
-        ui.reuploading = self.sharing.is_some();
+        ui.reuploading = !crate::direct_drive::enabled() && self.sharing.is_some();
         ui.error = None;
         ui.share_link = None;
         ui.upload_progress = 0.0;
@@ -1217,6 +1230,16 @@ impl EditorWindow {
                     let upload_cancel = cancel.clone();
                     let upload_project = project_path.clone();
                     let upload = gpui_tokio::Tokio::spawn(cx, async move {
+                        if crate::direct_drive::enabled() {
+                            return crate::direct_drive::upload_export(
+                                &upload_project,
+                                |progress| {
+                                    let _ = upload_tx.send(progress);
+                                },
+                                &upload_cancel,
+                            )
+                            .await;
+                        }
                         crate::upload::upload_exported_video(
                             upload_project,
                             organization_id,
@@ -1711,6 +1734,15 @@ impl EditorWindow {
         let (label, icon, primary) = match ui.destination {
             ExportDestination::File => ("Export to File", Some("icons/folder.svg"), true),
             ExportDestination::Clipboard => ("Export to Clipboard", Some("icons/copy.svg"), true),
+            ExportDestination::Link if crate::direct_drive::enabled() => (
+                if cap_direct_drive::is_connected() {
+                    "Upload to Google Drive"
+                } else {
+                    "Connect Google Drive in Settings"
+                },
+                Some("icons/link.svg"),
+                true,
+            ),
             ExportDestination::Link if sign_in_pending => ("Cancel Sign In", None, false),
             ExportDestination::Link if !signed_in => {
                 ("Sign in to share", Some("icons/link.svg"), true)
@@ -1797,7 +1829,9 @@ impl EditorWindow {
                     ExportDestination::ALL
                         .iter()
                         .map(|dest| {
-                            let label = if *dest == ExportDestination::Link
+                            let label = if *dest == ExportDestination::Link && crate::direct_drive::enabled() {
+                                "Google Drive"
+                            } else if *dest == ExportDestination::Link
                                 && self.sharing.is_some()
                             {
                                 "Reupload"
@@ -1847,7 +1881,7 @@ impl EditorWindow {
                 )
             })
             .when(
-                ui.destination == ExportDestination::Link && self.sharing.is_some(),
+                ui.destination == ExportDestination::Link && self.sharing.is_some() && !crate::direct_drive::enabled(),
                 |field| {
                     let link = self.sharing.as_ref()
                         .map(|sharing| sharing.link.clone())
@@ -1889,6 +1923,7 @@ impl EditorWindow {
             )
             .when(
                 ui.destination == ExportDestination::Link
+                    && !crate::direct_drive::enabled()
                     && self.sharing.is_none()
                     && store::auth_snapshot().organizations.len() > 1,
                 |this| {
@@ -2445,6 +2480,7 @@ impl EditorWindow {
                 "Copying to clipboard"
             }
             ExportPhase::Copying => "Saving to file",
+            ExportPhase::Uploading if crate::direct_drive::enabled() => "Uploading to Google Drive",
             ExportPhase::Uploading if ui.reuploading => "Reuploading to your link",
             ExportPhase::Uploading => "Creating shareable link",
             ExportPhase::Done if ui.destination == ExportDestination::Clipboard => {
@@ -2596,7 +2632,11 @@ impl EditorWindow {
                         .text_color(Hsla::from(editor.text_2))
                         .text_center()
                         .child(
-                            "Use Instant Mode for your next recording if you want a link the moment you stop.",
+                            if crate::direct_drive::enabled() {
+                                "Your video stays private. Open its Drive link and use Share to grant people access."
+                            } else {
+                                "Use Instant Mode for your next recording if you want a link the moment you stop."
+                            },
                         ),
                 )
             })

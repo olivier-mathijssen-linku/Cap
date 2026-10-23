@@ -4374,6 +4374,9 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if crate::direct_drive::enabled() {
+            return;
+        }
         let auth = store::auth_snapshot();
         let Some(token) = auth.token else {
             self.pages.storage = None;
@@ -4421,6 +4424,10 @@ impl SettingsWindow {
     fn gdrive_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pages.integrations_view = IntegrationsView::GoogleDrive;
         self.pages.gdrive.error = None;
+        if crate::direct_drive::enabled() {
+            cx.notify();
+            return;
+        }
         self.integrations_fetch_storage(false, window, cx);
         self.gdrive_fetch_s3_presence(window, cx);
         cx.notify();
@@ -4680,6 +4687,38 @@ impl SettingsWindow {
     /// `connect.mutate()`: open the returned URL, then poll for the
     /// connection (1.5s interval, 120s timeout).
     fn gdrive_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::direct_drive::enabled() {
+            self.pages.gdrive.connect_pending = true;
+            self.pages.gdrive.error = None;
+            self.spawn_tokio(
+                window,
+                cx,
+                cap_direct_drive::begin_authorization(),
+                |this, result, window, cx| match result {
+                    Ok(authorization) => {
+                        cx.open_url(&authorization.url);
+                        this.spawn_tokio(
+                            window,
+                            cx,
+                            async move {
+                                authorization
+                                    .complete(&std::sync::atomic::AtomicBool::new(false))
+                                    .await
+                            },
+                            |this, result, _, _| {
+                                this.pages.gdrive.connect_pending = false;
+                                this.pages.gdrive.error = result.err();
+                            },
+                        );
+                    }
+                    Err(error) => {
+                        this.pages.gdrive.connect_pending = false;
+                        this.pages.gdrive.error = Some(error);
+                    }
+                },
+            );
+            return;
+        }
         let auth = store::auth_snapshot();
         let Some(token) = auth.token else {
             return;
@@ -4903,6 +4942,11 @@ impl SettingsWindow {
     }
 
     fn gdrive_disconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::direct_drive::enabled() {
+            self.pages.gdrive.error = cap_direct_drive::disconnect().err();
+            cx.notify();
+            return;
+        }
         let auth = store::auth_snapshot();
         let Some(token) = auth.token else {
             return;
@@ -4953,6 +4997,9 @@ impl SettingsWindow {
     }
 
     fn render_integrations_index(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        if crate::direct_drive::enabled() {
+            return self.render_gdrive_config(cx);
+        }
         let theme = self.theme;
         let auth = store::auth_snapshot();
         let is_pro = auth.plan_upgraded;
@@ -5299,6 +5346,33 @@ impl SettingsWindow {
     }
 
     fn render_gdrive_config(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        if crate::direct_drive::enabled() {
+            let connected = cap_direct_drive::is_connected();
+            let pending = self.pages.gdrive.connect_pending;
+            let mut children = vec![self.section(
+                "Google Drive",
+                Some("Upload Studio recordings directly to a private Cap Recordings folder. Each upload creates a new video. Open its Drive link and use Share to give viewers access."),
+                None,
+                vec![div().flex().flex_col().gap(px(12.))
+                    .child(if connected { "Connected to Google Drive" } else { "Connect your Google account to upload recordings" })
+                    .child(self.button("direct-drive-connect", (ui::ButtonVariant::Primary, None),
+                        if pending { "Waiting for Google sign-in..." } else if connected { "Disconnect Google Drive" } else { "Connect Google Drive" },
+                        pending, cx, move |this, window, cx| {
+                            if connected { this.gdrive_disconnect(window, cx); } else { this.gdrive_connect(window, cx); }
+                        }))
+                    .into_any_element()],
+            ).into_any_element()];
+            if let Some(error) = &self.pages.gdrive.error {
+                children.push(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(Hsla::from(self.theme.red_9))
+                        .child(error.clone())
+                        .into_any_element(),
+                );
+            }
+            return children;
+        }
         let theme = self.theme;
         let auth = store::auth_snapshot();
         let header = self

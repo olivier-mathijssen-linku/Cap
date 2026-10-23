@@ -15,6 +15,10 @@ edition = "2024"
 license = "AGPL-3.0"
 publish = false
 
+[features]
+default = ["direct-drive"]
+direct-drive = []
+
 [[bin]]
 name = "cap-gpui"
 path = "src/main.rs"
@@ -24,6 +28,7 @@ name = "studio-finalization-benchmark"
 path = "../../crates/recording/examples/studio-finalization-benchmark.rs"
 
 [dependencies]
+cap-direct-drive = { path = "../../integrations/direct-drive" }
 cap-audio = { path = "../../crates/audio" }
 cap-cli-install = { path = "../../crates/cli-install" }
 cap-gpui-kernels = { path = "kernels" }

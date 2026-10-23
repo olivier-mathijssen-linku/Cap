@@ -160,6 +160,12 @@ pub fn app_data_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
 
+    if crate::direct_drive::enabled() {
+        return dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("CapDrive");
+    }
+
     #[cfg(target_os = "macos")]
     {
         PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))

@@ -176,6 +176,9 @@ fn set_status(status: UpdateStatus, cx: &mut App) {
 }
 
 pub(crate) fn check_manually(cx: &mut App) {
+    if crate::direct_drive::enabled() {
+        return;
+    }
     if !cx.has_global::<UpdateScheduler>() {
         return;
     }
@@ -208,6 +211,9 @@ pub(crate) fn check_manually(cx: &mut App) {
 }
 
 pub(crate) fn update_channel_changed(channel: UpdateChannel, cx: &mut App) {
+    if crate::direct_drive::enabled() {
+        return;
+    }
     if !cx.has_global::<UpdateScheduler>() {
         return;
     }
@@ -262,6 +268,9 @@ fn busy_alert(cx: &mut App) {
 }
 
 pub(crate) fn schedule_startup_check(cx: &mut App) {
+    if crate::direct_drive::enabled() {
+        return;
+    }
     let (wake, requests) = flume::bounded(1);
     cx.set_global(UpdateScheduler {
         wake,
@@ -559,6 +568,9 @@ fn prompt_restart(cx: &mut App) {
 }
 
 pub(crate) fn install_and_relaunch(cx: &mut App) {
+    if crate::direct_drive::enabled() {
+        return;
+    }
     if !cx.has_global::<UpdateScheduler>() {
         return;
     }

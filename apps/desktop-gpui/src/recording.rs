@@ -1994,6 +1994,9 @@ async fn start_internal(
     config: StartConfig,
     #[cfg(target_os = "linux")] attempt: Option<InstantAttempt>,
 ) -> anyhow::Result<ActiveRecording> {
+    if crate::direct_drive::enabled() && config.mode == RecordingMode::Instant {
+        anyhow::bail!("Use Studio Mode to record locally and upload to Google Drive.");
+    }
     #[cfg(target_os = "linux")]
     validate_linux_camera_request(
         config.mode,

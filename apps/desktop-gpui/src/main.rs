@@ -20,6 +20,7 @@ mod deeplink;
 mod dev_restore;
 mod devices;
 mod diagnostics;
+mod direct_drive;
 mod doodle;
 mod draw_bench;
 mod editor_audio;

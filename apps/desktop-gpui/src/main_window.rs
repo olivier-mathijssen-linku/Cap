@@ -122,10 +122,15 @@ impl Mode {
     /// `get_current_mode` (`src-tauri/src/tray.rs:355-361`): the stored mode,
     /// falling back to `RecordingMode::default()`, which is Instant.
     pub fn from_store() -> Self {
-        crate::store::recording_mode_slug()
+        let mode = crate::store::recording_mode_slug()
             .as_deref()
             .and_then(Self::from_slug)
-            .unwrap_or(Self::Instant)
+            .unwrap_or(Self::Instant);
+        if crate::direct_drive::enabled() && mode == Self::Instant {
+            Self::Studio
+        } else {
+            mode
+        }
     }
 
     pub fn icon(self) -> &'static str {
@@ -1838,6 +1843,11 @@ impl MainWindow {
     /// select window all land here, so there is one place a mode change
     /// happens.
     pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        let mode = if crate::direct_drive::enabled() && mode == Mode::Instant {
+            Mode::Studio
+        } else {
+            mode
+        };
         self.clear_mode_hover();
         cx.notify();
         if self.mode == mode
@@ -1902,6 +1912,9 @@ impl MainWindow {
     /// path does not go through the recording actors at all).
     fn recording_mode(&self, cx: &gpui::App) -> Option<recording::RecordingMode> {
         match self.effective_mode(cx) {
+            Mode::Instant if crate::direct_drive::enabled() => {
+                Some(recording::RecordingMode::Studio)
+            }
             Mode::Instant => Some(recording::RecordingMode::Instant),
             Mode::Studio => Some(recording::RecordingMode::Studio),
             Mode::Screenshot => None,
@@ -5734,80 +5747,83 @@ impl MainWindow {
         let locked = self.session.read(cx).editor_recording_target().is_some();
 
         div().flex().flex_col().gap(px(8.)).w_full().children(
-            [Mode::Instant, Mode::Studio, Mode::Screenshot].map(|mode| {
-                let selected = mode == effective_mode;
+            [Mode::Instant, Mode::Studio, Mode::Screenshot]
+                .into_iter()
+                .filter(|mode| !crate::direct_drive::enabled() || *mode != Mode::Instant)
+                .map(|mode| {
+                    let selected = mode == effective_mode;
 
-                div()
-                    .id(SharedString::from(mode.panel_title()))
-                    .when(locked && !selected, |this| this.opacity(0.5))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(12.))
-                    .p(px(12.))
-                    .w_full()
-                    .rounded(px(12.))
-                    .border_2()
-                    .border_color(if selected {
-                        Hsla::from(theme.blue_9)
-                    } else if theme.is_dark() {
-                        theme.body_border(5)
-                    } else {
-                        theme.body_border(4)
-                    })
-                    .bg(if selected {
-                        theme.tile_selected_bg()
-                    } else if theme.is_dark() {
-                        theme.body_fill(3)
-                    } else {
-                        theme.body_fill(2)
-                    })
-                    .child(
-                        svg()
-                            .path(mode.icon())
-                            .size(px(20.))
-                            .flex_shrink_0()
-                            .text_color(if selected {
-                                theme.blue_11
-                            } else {
-                                theme.gray_12
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    // `text-sm font-semibold`
-                                    // (`ModeInfoPanel.tsx:106`). `font-semibold`
-                                    // renders 700: no 600 face is loaded over
-                                    // there (`ui-solid/vite.js:31-33`).
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(if selected {
-                                        theme.blue_11
-                                    } else {
-                                        theme.gray_12
-                                    })
-                                    .child(mode.panel_title()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(theme.gray_11)
-                                    .child(mode.panel_description()),
-                            ),
-                    )
-                    .hover(|style| style.bg(theme.body_hover_fill(4)))
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.set_mode(mode, cx);
-                        this.close_panel(cx);
-                    }))
-            }),
+                    div()
+                        .id(SharedString::from(mode.panel_title()))
+                        .when(locked && !selected, |this| this.opacity(0.5))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .p(px(12.))
+                        .w_full()
+                        .rounded(px(12.))
+                        .border_2()
+                        .border_color(if selected {
+                            Hsla::from(theme.blue_9)
+                        } else if theme.is_dark() {
+                            theme.body_border(5)
+                        } else {
+                            theme.body_border(4)
+                        })
+                        .bg(if selected {
+                            theme.tile_selected_bg()
+                        } else if theme.is_dark() {
+                            theme.body_fill(3)
+                        } else {
+                            theme.body_fill(2)
+                        })
+                        .child(
+                            svg()
+                                .path(mode.icon())
+                                .size(px(20.))
+                                .flex_shrink_0()
+                                .text_color(if selected {
+                                    theme.blue_11
+                                } else {
+                                    theme.gray_12
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        // `text-sm font-semibold`
+                                        // (`ModeInfoPanel.tsx:106`). `font-semibold`
+                                        // renders 700: no 600 face is loaded over
+                                        // there (`ui-solid/vite.js:31-33`).
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(if selected {
+                                            theme.blue_11
+                                        } else {
+                                            theme.gray_12
+                                        })
+                                        .child(mode.panel_title()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(theme.gray_11)
+                                        .child(mode.panel_description()),
+                                ),
+                        )
+                        .hover(|style| style.bg(theme.body_hover_fill(4)))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.set_mode(mode, cx);
+                            this.close_panel(cx);
+                        }))
+                }),
         )
     }
 
@@ -6232,7 +6248,9 @@ impl MainWindow {
             .border_1()
             .border_color(theme.body_border(5))
             .bg(theme.body_fill(3))
-            .child(button(Mode::Instant, "mode-instant", 0))
+            .when(!crate::direct_drive::enabled(), |this| {
+                this.child(button(Mode::Instant, "mode-instant", 0))
+            })
             .child(button(Mode::Studio, "mode-studio", 1))
             .child(button(Mode::Screenshot, "mode-screenshot", 2))
             // `absolute -left-1.5 -top-2 p-1 rounded-full bg-gray-5`, hanging
