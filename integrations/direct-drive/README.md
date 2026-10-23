@@ -68,10 +68,13 @@ do not contact Google or access the system credential store.
 A real Google authorization, a sample video upload, playback, and a viewer
 access check must still be verified with the configured Google project.
 
-Initial validation: all eight Drive library tests and its strict Clippy check
-pass. The macOS desktop check currently stops in Cap's `cidre` dependency
-because the selected developer directory contains only Command Line Tools;
-full Xcode is required. The desktop integration has therefore not yet been
-compiled or tested in the UI.
+Validation: all eight Drive library tests and its strict Clippy check pass.
+After installing full Xcode, accepting its license, and installing CMake, the
+GPUI desktop binary builds successfully. A local macOS 27 Apple Silicon app
+bundle with the recording helper, video libraries, backgrounds, and audio assets
+has been signed locally, verified, and opened to the onboarding screen.
+The local prototype does not bundle Cap's CLI diagnostics sidecar. Screen
+Recording and Accessibility permissions, Google consent, and a real recording
+and upload still require verification before calling the workflow complete.
 
 The source retains Cap's AGPLv3 license and copyright notices.
