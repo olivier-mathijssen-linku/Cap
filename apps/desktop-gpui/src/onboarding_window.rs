@@ -111,12 +111,9 @@ const WELCOME_ENTRANCE_SECS: f32 = 3.4;
 enum Step {
     Permissions,
     Overview,
-    Instant,
     Studio,
     Screenshot,
     Toggle,
-    Shortcuts,
-    Faq,
 }
 
 fn guided_permission(permission: OSPermission) -> bool {
@@ -124,16 +121,14 @@ fn guided_permission(permission: OSPermission) -> bool {
 }
 
 impl Step {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 5] = [
         Self::Permissions,
         Self::Overview,
-        Self::Instant,
         Self::Studio,
         Self::Screenshot,
         Self::Toggle,
-        Self::Shortcuts,
-        Self::Faq,
     ];
+    const LAST: Self = Self::Toggle;
 
     fn first(macos: bool, permissions_only: bool) -> Self {
         if macos || permissions_only {
@@ -159,7 +154,6 @@ impl Step {
 
     fn demo_timing(self) -> Option<(&'static [u64], u64)> {
         match self {
-            Self::Instant => Some((&[300, 2350, 3350, 4350, 5350, 6350, 7350, 8350], 9550)),
             Self::Studio => Some((
                 &[
                     300, 2350, 3350, 4350, 5350, 6350, 7350, 8150, 9150, 10150, 11150,
@@ -182,69 +176,33 @@ struct ModeDetail {
     features: [&'static str; 4],
 }
 
-const MODES: [ModeDetail; 3] = [
-    ModeDetail {
-        mode: Mode::Instant,
-        title: "Instant Mode",
-        tagline: "Record & share in seconds",
-        description: "Your recording uploads as you capture. Stop recording and instantly get a shareable link — no waiting.",
-        icon: "icons/instant.svg",
-        features: [
-            "Instant shareable link",
-            "Background uploading",
-            "AI transcription & summary",
-            "Browser-based playback",
-        ],
-    },
+const MODES: [ModeDetail; 2] = [
     ModeDetail {
         mode: Mode::Studio,
-        title: "Studio Mode",
-        tagline: "Professional editing tools",
-        description: "Record in full quality locally, then use the built-in editor to add backgrounds, padding, cursor effects, and more.",
+        title: "Video",
+        tagline: "Opnemen, bewerken, delen",
+        description: "Neem je scherm op in volle kwaliteit. Maak het mooi in de editor en zet het daarna in Google Drive, met een link om te delen.",
         icon: "icons/film-cut.svg",
         features: [
-            "Full quality local recording",
-            "Built-in editor & effects",
-            "Custom backgrounds & padding",
-            "Export or share when ready",
+            "Opname in volle kwaliteit",
+            "Editor met achtergrond en zoom",
+            "Camera en microfoon erbij",
+            "Naar Drive, bestand of klembord",
         ],
     },
     ModeDetail {
         mode: Mode::Screenshot,
-        title: "Screenshot Mode",
-        tagline: "Capture & beautify instantly",
-        description: "Take screenshots with a single hotkey, add annotations and beautiful backgrounds, then share or copy instantly.",
+        title: "Afbeelding",
+        tagline: "Een kiekje van je scherm",
+        description: "Maak een screenshot met één sneltoets, zet er pijlen en tekst bij en kopieer of bewaar hem meteen.",
         icon: "icons/screenshot.svg",
         features: [
-            "Instant hotkey capture",
-            "Annotation & drawing tools",
-            "Beautiful backgrounds",
-            "Copy, save, or share",
+            "Screenshot met één sneltoets",
+            "Pijlen, kaders en tekst",
+            "Mooie achtergronden",
+            "Kopiëren of bewaren",
         ],
     },
-];
-
-const FAQ: [(&str, &str); 5] = [
-    (
-        "What is Kiekes?",
-        "Kiekes is Linku's own recording tool, built on the open-source Kiekes project.",
-    ),
-    (
-        "What's the difference between Instant and Studio?",
-        "Instant mode uploads as you record — stop recording and you'll have a shareable link immediately. Studio mode records locally in full quality, letting you edit with backgrounds, effects, and more before sharing.",
-    ),
-    (
-        "Where are my recordings stored?",
-        "All recordings are stored locally on your computer. When you export to Drive, a copy is uploaded to the Google Drive folder you choose. You can manage storage in Settings.",
-    ),
-    (
-        "Can I change my shortcuts later?",
-        "Head to Settings → Shortcuts at any time to customize all your keyboard shortcuts.",
-    ),
-    (
-        "How does sharing work?",
-        "Export your edited video to Google Drive and copy its link, or save it to a file or the clipboard.",
-    ),
 ];
 
 pub struct OnboardingWindow {
@@ -276,7 +234,6 @@ pub struct OnboardingWindow {
     chosen_mode: Option<usize>,
     step_revision: usize,
     transition_direction: f32,
-    faq_open: [bool; FAQ.len()],
     error: Option<String>,
     focus: FocusHandle,
     stage: stage::StageState,
@@ -330,7 +287,6 @@ impl OnboardingWindow {
             chosen_mode: None,
             step_revision: 0,
             transition_direction: 1.,
-            faq_open: [false; FAQ.len()],
             error: None,
             focus: cx.focus_handle(),
             stage: stage::StageState::new(granted),
@@ -477,7 +433,7 @@ impl OnboardingWindow {
             return;
         }
         if !store::set_has_completed_onboarding(true) || !store::set_has_completed_startup(true) {
-            self.error = Some("Could not save onboarding progress. Please try again.".into());
+            self.error = Some("De voortgang kon niet worden bewaard. Probeer het opnieuw.".into());
             cx.notify();
             return;
         }
@@ -500,7 +456,7 @@ impl OnboardingWindow {
             return;
         }
         if !store::set_has_completed_startup(true) {
-            self.error = Some("Could not save onboarding progress. Please try again.".into());
+            self.error = Some("De voortgang kon niet worden bewaard. Probeer het opnieuw.".into());
             cx.notify();
             return;
         }
@@ -569,7 +525,7 @@ impl OnboardingWindow {
             permissions::relaunch(cx);
             return;
         }
-        if self.permissions_only || self.step == Step::Faq {
+        if self.permissions_only || self.step == Step::LAST {
             self.finish(cx);
         } else if let Some(next) = self
             .step
@@ -605,7 +561,7 @@ impl OnboardingWindow {
             return;
         }
         match key.key.as_str() {
-            "right" if !self.permissions_only && self.step != Step::Faq => self.next(window, cx),
+            "right" if !self.permissions_only && self.step != Step::LAST => self.next(window, cx),
             "left" => self.back(window, cx),
             "enter" => self.next(window, cx),
             _ => return,
@@ -680,7 +636,7 @@ impl OnboardingWindow {
             "isMuted",
             serde_json::Value::Bool(self.muted),
         ) {
-            self.error = Some("Could not save the sound preference.".into());
+            self.error = Some("De geluidsinstelling kon niet worden bewaard.".into());
         }
         cx.notify();
     }
@@ -954,14 +910,6 @@ impl OnboardingWindow {
                     .font_weight(FontWeight::MEDIUM)
                     .line_height(px(34.)),
             )
-            .child(div().mt(px(4.)).child(crate::doodle::doodle(
-                &crate::onboarding_doodles::UNDERLINE,
-                paper.palette(),
-                self.step_at,
-                !self.animated,
-                132.,
-                12.,
-            )))
             .child(
                 copy(subtitle, 15., paper.soft)
                     .mt(px(10.))
@@ -1151,16 +1099,7 @@ impl OnboardingWindow {
         } else {
             1.
         };
-        let (subtitle_y, subtitle_opacity) = rise(1.35, 0.03);
-        let (button_y, button_opacity) = rise(1.8, 0.);
-        let logo_leave = ease(beat(m.exit, 0.09, 0.4));
-        let logo_y = -24. * logo_leave * travel;
-        let logo_opacity = ease(beat(m.t, 0.6, 1.2)) * (1. - logo_leave);
-
-        let logo = img("onboarding/wordmark.svg")
-            .w(px(120.))
-            .h(px(40.))
-            .object_fit(ObjectFit::Contain);
+        let (button_y, button_opacity) = rise(1.6, 0.);
 
         let shadow = |color: u32, y: f32, blur: f32, spread: f32, inset: bool| gpui::BoxShadow {
             color: rgba(color).into(),
@@ -1171,17 +1110,17 @@ impl OnboardingWindow {
         };
         let button_shadow = move |lift: bool| {
             vec![
-                shadow(0xffffffcc, 2., 3., -1., true),
-                shadow(0x3d77c233, -1., 1., 0., true),
+                shadow(0xffffff4d, 1., 1., 0., true),
+                shadow(0x1b315e33, -1., 1., 0., true),
                 shadow(
-                    if lift { 0x3d77c238 } else { 0x3d77c233 },
+                    if lift { 0x2a4b9447 } else { 0x2a4b943d },
                     if lift { 2. } else { 1. },
                     if lift { 4. } else { 2. },
                     0.,
                     false,
                 ),
                 shadow(
-                    if lift { 0x78b2f0a6 } else { 0x78b2f08c },
+                    if lift { 0x3b66c48c } else { 0x3b66c466 },
                     if lift { 14. } else { 10. },
                     if lift { 30. } else { 24. },
                     -10.,
@@ -1196,22 +1135,19 @@ impl OnboardingWindow {
             .relative()
             .top(px(button_y))
             .opacity(button_opacity)
-            .mt(px(52.))
+            .mt(px(44.))
             .w(px(274.))
             .h(px(58.))
             .rounded(px(14.))
             .border_1()
-            .border_color(rgba(0x3f7fcda6))
+            .border_color(rgb(0x2f58b0))
             .bg(linear_gradient(
                 180.,
-                linear_color_stop(rgb(0xf5fafe), 0.),
-                linear_color_stop(rgb(0xcfe2f6), 1.),
+                linear_color_stop(rgb(0x5079d1), 0.),
+                linear_color_stop(rgb(0x3b66c4), 1.),
             ))
             .shadow(button_shadow(false))
-            .hover(move |el| {
-                el.border_color(rgba(0x3474c4c7))
-                    .shadow(button_shadow(true))
-            })
+            .hover(move |el| el.border_color(rgb(0x2a4b94)).shadow(button_shadow(true)))
             .flex()
             .flex_col()
             .items_center()
@@ -1228,12 +1164,12 @@ impl OnboardingWindow {
                     .rounded_t(px(11.))
                     .bg(linear_gradient(
                         180.,
-                        linear_color_stop(rgba(0xffffff59), 0.),
+                        linear_color_stop(rgba(0xffffff2e), 0.),
                         linear_color_stop(rgba(0xffffff00), 1.),
                     )),
             )
             .child(
-                copy("Get Started", 16., ink)
+                copy("Aan de slag", 16., gpui::white())
                     .line_height(px(20.))
                     .font_weight(FontWeight::MEDIUM),
             )
@@ -1244,20 +1180,19 @@ impl OnboardingWindow {
                     .justify_center()
                     .gap(px(4.))
                     .child(
-                        copy("Click here, or press", 11., ink.opacity(0.55))
+                        copy("Klik hier, of druk op", 11., gpui::white().opacity(0.8))
                             .font_weight(FontWeight::NORMAL)
                             .line_height(px(14.)),
                     )
                     .child(
-                        copy("Space", 10., ink.opacity(0.7))
+                        copy("spatie", 10., gpui::white())
                             .font_weight(FontWeight::MEDIUM)
                             .line_height(px(14.))
                             .px(px(4.))
                             .py(px(1.))
                             .rounded(px(3.))
                             .border_1()
-                            .border_color(rgba(0x3f7fcd40))
-                            .bg(rgba(0xffffffcc)),
+                            .border_color(rgba(0xffffff80)),
                     ),
             );
 
@@ -1273,33 +1208,10 @@ impl OnboardingWindow {
             .child(
                 div()
                     .relative()
-                    .top(px(logo_y))
-                    .opacity(logo_opacity)
-                    .child(logo),
-            )
-            .child(
-                div()
-                    .relative()
                     .top(px(title_y))
-                    .mt(px(30.))
-                    .mb(px(18.))
                     .w(px(380.))
                     .h(px(96.))
                     .child(welcome_script(written, title_opacity)),
-            )
-            .child(
-                copy(
-                    "The open source screen sharing app for everyone.",
-                    22.,
-                    ink.opacity(0.75),
-                )
-                .relative()
-                .top(px(subtitle_y))
-                .opacity(subtitle_opacity)
-                .font_family("Source Serif 4")
-                .font_weight(FontWeight::LIGHT)
-                .line_height(px(32.))
-                .whitespace_nowrap(),
             )
             .child(button)
             .when_some(self.error.clone(), |el, error| {
@@ -1341,8 +1253,8 @@ impl OnboardingWindow {
     fn render_overview(&self) -> AnyElement {
         let theme = self.theme;
         div().flex().flex_col().items_center().justify_center().min_h_full().px(px(40.)).gap(px(32.))
-            .child(self.heading("One app, every workflow", "Whether you need speed, studio quality, or a quick screenshot — Kiekes has a mode for it."))
-            .child(div().flex().gap(px(16.)).w_full().max_w(px(540.)).children(MODES.iter().enumerate().map(|(index, mode)| {
+            .child(self.heading("Twee manieren om vast te leggen", "Een video als je iets wilt laten zien of uitleggen, een afbeelding voor een snel kiekje van je scherm."))
+            .child(div().flex().gap(px(16.)).w_full().max_w(px(480.)).children(MODES.iter().enumerate().map(|(index, mode)| {
                 let paper = stage::Paper::new(&theme);
                 let card = self.paper_card().flex_1().min_w_0().flex().flex_col().items_center().gap(px(10.)).px(px(20.)).pt(px(22.)).pb(px(24.))
                     .child(crate::doodle::doodle(mode_doodle(mode.mode), paper.palette(), self.step_at + Duration::from_millis(index as u64 * 180), !self.animated, 96., 84.))
@@ -1428,7 +1340,11 @@ impl OnboardingWindow {
                 self.paper_card()
                     .flex_1()
                     .min_w_0()
-                    .h(px(if index == 1 { 300. } else { 288. }))
+                    .h(px(if mode.mode == Mode::Studio {
+                        300.
+                    } else {
+                        288.
+                    }))
                     .rounded(px(16.))
                     .p(px(16.))
                     .child(self.render_demo(index)),
@@ -1449,6 +1365,7 @@ impl OnboardingWindow {
 
     fn render_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme;
+        let paper = stage::Paper::new(&theme);
         let active = self.chosen_mode.unwrap_or(self.demo_phase % MODES.len());
         div()
             .flex()
@@ -1459,8 +1376,8 @@ impl OnboardingWindow {
             .px(px(48.))
             .gap(px(32.))
             .child(self.heading(
-                "Switch modes anytime",
-                "Toggle between modes with a single click from the main Cap window.",
+                "Wissel wanneer je wilt",
+                "Kies Video of Afbeelding bovenaan het opnamevenster.",
             ))
             .child(
                 div()
@@ -1482,9 +1399,9 @@ impl OnboardingWindow {
                                     .rounded_full()
                                     .border_2()
                                     .border_color(if active == index {
-                                        theme.blue_9
+                                        paper.accent
                                     } else {
-                                        theme.gray_5
+                                        Hsla::from(theme.gray_5)
                                     })
                                     .bg(if active == index {
                                         theme.body_fill(7)
@@ -1536,111 +1453,6 @@ impl OnboardingWindow {
             .into_any_element()
     }
 
-    fn render_shortcuts(&self) -> AnyElement {
-        let theme = self.theme;
-        div().flex().flex_col().items_center().justify_center().min_h_full().px(px(48.)).gap(px(24.))
-            .child(self.heading("Make Kiekes yours", "Customize everything from keyboard shortcuts to storage. Kiekes adapts to your workflow."))
-            .child(div().flex().flex_col().w_full().max_w(px(420.)).gap(px(8.)).children([
-                ("Keyboard Shortcuts", "Global hotkeys for recording, screenshots, and switching modes"),
-                ("Custom S3 Storage", "Connect your own S3-compatible bucket for full control over your recordings"),
-                ("Custom Domain", "Use your own domain for shareable links instead of cap.so"),
-                ("Recording Preferences", "FPS, quality, countdown timer, cursor effects, and more"),
-            ].into_iter().map(|(title, description)| {
-                self.paper_card().rounded(px(16.)).px(px(18.)).py(px(13.)).flex().flex_col().gap(px(4.))
-                    .child(copy(title, 13., theme.gray_12).font_weight(FontWeight::MEDIUM))
-                    .child(copy(description, 11., theme.gray_10).line_height(px(15.)))
-            })))
-            .child(copy("Change any of these at any time in Settings", 12., theme.gray_9))
-            .into_any_element()
-    }
-
-    fn render_faq(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme;
-        div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .min_h_full()
-            .px(px(48.))
-            .py(px(24.))
-            .gap(px(24.))
-            .child(self.heading(
-                "Frequently Asked Questions",
-                "Everything you need to know to get started.",
-            ))
-            .child(
-                self.paper_card()
-                    .w_full()
-                    .max_w(px(480.))
-                    .overflow_hidden()
-                    .children(FAQ.iter().enumerate().map(|(index, (question, answer))| {
-                        let open = self.faq_open[index];
-                        div()
-                            .when(index > 0, |el| {
-                                el.border_t_1().border_color(theme.body_border(4))
-                            })
-                            .child(
-                                div()
-                                    .id(("onboarding-faq", index))
-                                    .tab_index(0)
-                                    .cursor_pointer()
-                                    .px(px(20.))
-                                    .py(px(16.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(px(12.))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.faq_open[index] = !this.faq_open[index];
-                                        cx.notify();
-                                    }))
-                                    .child(
-                                        copy(*question, 13., theme.gray_12)
-                                            .font_weight(FontWeight::MEDIUM),
-                                    )
-                                    .child(glyph(
-                                        if open {
-                                            "icons/chevron-up.svg"
-                                        } else {
-                                            "icons/chevron-down.svg"
-                                        },
-                                        16.,
-                                        theme.gray_10,
-                                    )),
-                            )
-                            .when(open, |el| {
-                                el.child(
-                                    div()
-                                        .px(px(20.))
-                                        .pb(px(16.))
-                                        .child(
-                                            copy(*answer, 13., theme.gray_10).line_height(px(20.)),
-                                        )
-                                        .when(index == 0, |el| {
-                                            el.child(
-                                                copy("View pricing plans", 13., theme.blue_10)
-                                                    .id("onboarding-faq-pricing")
-                                                    .cursor_pointer()
-                                                    .mt(px(8.))
-                                                    .on_click(|_, _, cx| {
-                                                        cx.open_url(crate::auth::PRICING_URL)
-                                                    }),
-                                            )
-                                        }),
-                                )
-                            })
-                    })),
-            )
-            .child(
-                copy("View pricing plans ↗", 13., theme.blue_10)
-                    .id("onboarding-pricing")
-                    .cursor_pointer()
-                    .on_click(|_, _, cx| cx.open_url(crate::auth::PRICING_URL)),
-            )
-            .into_any_element()
-    }
-
     fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
         let paper = stage::Paper::new(&self.theme);
         let first = self.first_step as usize;
@@ -1651,16 +1463,16 @@ impl OnboardingWindow {
             Step::ALL.len() - first
         };
         let disabled = self.step == Step::Permissions && !self.state.necessary_granted();
-        let last = self.permissions_only || self.step == Step::Faq;
+        let last = self.permissions_only || self.step == Step::LAST;
         let relaunch = self.step == Step::Permissions && !disabled && self.needs_relaunch();
         let label = if relaunch {
-            "Relaunch Kiekes"
+            "Kiekes opnieuw starten"
         } else if self.permissions_only {
-            "Continue to Kiekes"
+            "Verder naar Kiekes"
         } else if last {
-            "Start Using Kiekes"
+            "Aan de slag met Kiekes"
         } else {
-            "Continue"
+            "Verder"
         };
         div()
             .flex()
@@ -1679,7 +1491,7 @@ impl OnboardingWindow {
                     .w_full()
                     .child(div().flex_1().when(current > 0, |el| {
                         el.child(
-                            copy("←  Back", 13., paper.soft)
+                            copy("←  Terug", 13., paper.soft)
                                 .id("onboarding-back")
                                 .cursor_pointer()
                                 .hover(move |el| el.text_color(paper.ink))
@@ -1698,9 +1510,9 @@ impl OnboardingWindow {
                                         .w(px(if current == index { 22. } else { 6. }))
                                         .rounded_full()
                                         .bg(if current == index {
-                                            paper.ink
+                                            paper.accent
                                         } else if current > index {
-                                            paper.soft
+                                            paper.accent.opacity(0.4)
                                         } else {
                                             paper.track
                                         })
@@ -1721,13 +1533,13 @@ impl OnboardingWindow {
                                     .justify_center()
                                     .gap(px(8.))
                                     .border(px(1.5))
-                                    .border_color(if disabled { paper.track } else { paper.ink })
+                                    .border_color(if disabled { paper.track } else { paper.accent })
                                     .bg(if disabled {
                                         gpui::transparent_black()
                                     } else {
-                                        paper.ink
+                                        paper.accent
                                     })
-                                    .text_color(if disabled { paper.soft } else { paper.bg })
+                                    .text_color(if disabled { paper.soft } else { gpui::white() })
                                     .when(!disabled, |el| {
                                         el.cursor_pointer().hover(|el| el.opacity(0.88)).on_click(
                                             cx.listener(|this, _, window, cx| {
@@ -1750,7 +1562,7 @@ impl OnboardingWindow {
                                             "icons/move-right.svg"
                                         },
                                         15.,
-                                        if disabled { paper.soft } else { paper.bg },
+                                        if disabled { paper.soft } else { gpui::white() },
                                     )),
                             ),
                         ),
@@ -1763,9 +1575,9 @@ impl OnboardingWindow {
                     .gap(px(14.))
                     .child(copy(
                         if disabled {
-                            "Allow the required permissions to continue"
+                            "Sta eerst schermopname en toegankelijkheid toe"
                         } else {
-                            "Press Enter ↵ or use ← → arrow keys"
+                            "Druk op Enter ↵ of gebruik ← →"
                         },
                         11.,
                         paper.soft,
@@ -1774,7 +1586,7 @@ impl OnboardingWindow {
                         self.state.necessary_granted() && !self.permissions_only && !last,
                         |el| {
                             el.child(
-                                copy("Skip the tour", 11., paper.soft)
+                                copy("Rondleiding overslaan", 11., paper.soft)
                                     .id("onboarding-skip")
                                     .cursor_pointer()
                                     .hover(move |el| el.text_color(paper.ink))
@@ -1910,7 +1722,7 @@ impl OnboardingWindow {
                                     .flex()
                                     .flex_col()
                                     .child(
-                                        copy("Start Recording", 15., gpui::white())
+                                        copy("Opname starten", 15., gpui::white())
                                             .font_weight(FontWeight::MEDIUM)
                                             .whitespace_nowrap(),
                                     )
@@ -1973,7 +1785,7 @@ impl OnboardingWindow {
                                 el.child(glyph("icons/stop-circle.svg", 20., rgb(0xf87171)))
                             })
                             .child(copy(
-                                if stopped { "Stopped".into() } else { time },
+                                if stopped { "Gestopt".into() } else { time },
                                 14.,
                                 if stopped {
                                     Hsla::from(theme.gray_10)
@@ -2039,92 +1851,6 @@ impl OnboardingWindow {
                     .border_color(theme.gray_5)
                     .opacity(if stopped { 0.45 } else { 1. })
                     .child(glyph("icons/more-vertical.svg", 20., theme.gray_10)),
-            )
-    }
-
-    fn demo_link(&self) -> Div {
-        let theme = self.theme;
-        let copied = self.demo_phase >= 8;
-        self.card()
-            .bg(if theme.is_dark() {
-                theme.gray_1.into()
-            } else {
-                gpui::white()
-            })
-            .w_full()
-            .max_w(px(340.))
-            .overflow_hidden()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(16.))
-                    .pt(px(14.))
-                    .pb(px(10.))
-                    .child(
-                        div()
-                            .size(px(20.))
-                            .rounded_full()
-                            .bg(self.success_palette().0)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(glyph("icons/check.svg", 12., self.success_palette().2)),
-                    )
-                    .child(copy("Link ready to share!", 12., theme.gray_12)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .m(px(12.))
-                    .mt_0()
-                    .p(px(8.))
-                    .rounded(px(8.))
-                    .bg(theme.body_fill(3))
-                    .child(
-                        copy("cap.so/s/m4k92x", 11., theme.gray_11)
-                            .flex_1()
-                            .min_w_0(),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .px(px(8.))
-                            .py(px(5.))
-                            .rounded(px(6.))
-                            .bg(if copied {
-                                self.success_palette().0
-                            } else {
-                                theme.body_fill(1)
-                            })
-                            .child(glyph(
-                                if copied {
-                                    "icons/check.svg"
-                                } else {
-                                    "icons/copy.svg"
-                                },
-                                12.,
-                                if copied {
-                                    self.success_palette().2
-                                } else {
-                                    theme.body_text()
-                                },
-                            ))
-                            .child(copy(
-                                if copied { "Copied!" } else { "Copy" },
-                                11.,
-                                if copied {
-                                    self.success_palette().2
-                                } else {
-                                    theme.body_text()
-                                },
-                            )),
-                    ),
             )
     }
 
@@ -2208,7 +1934,7 @@ impl OnboardingWindow {
                             .child(copy("Kiekes Editor", 10., theme.gray_11)),
                     )
                     .child(
-                        copy("Export", 9., gpui::white())
+                        copy("Exporteren", 9., gpui::white())
                             .px(px(10.))
                             .py(px(4.))
                             .rounded(px(6.))
@@ -2299,9 +2025,9 @@ impl OnboardingWindow {
                                                 })
                                                 .child(copy(
                                                     if phase >= 11 {
-                                                        "Export complete!"
+                                                        "Klaar!"
                                                     } else {
-                                                        "Exporting..."
+                                                        "Exporteren…"
                                                     },
                                                     14.,
                                                     theme.gray_12,
@@ -2488,14 +2214,14 @@ impl OnboardingWindow {
                             .flex()
                             .gap(px(4.))
                             .child(
-                                copy("Copy", 9., theme.gray_12)
+                                copy("Kopiëren", 9., theme.gray_12)
                                     .px(px(6.))
                                     .py(px(4.))
                                     .rounded(px(4.))
                                     .bg(theme.body_fill(3)),
                             )
                             .child(
-                                copy("Save", 9., gpui::white())
+                                copy("Bewaren", 9., gpui::white())
                                     .px(px(6.))
                                     .py(px(4.))
                                     .rounded(px(4.))
@@ -2547,7 +2273,7 @@ impl OnboardingWindow {
                                                 12.,
                                                 self.success_palette().2,
                                             ))
-                                            .child(copy("Copied to clipboard", 11., theme.gray_12)),
+                                            .child(copy("Gekopieerd", 11., theme.gray_12)),
                                     ),
                             )
                         }),
@@ -2560,17 +2286,7 @@ impl OnboardingWindow {
         let phase = self.demo_phase;
         let (labels, active) = match index {
             0 => (
-                ["Record", "Stop", "Share link"],
-                if phase <= 5 {
-                    0
-                } else if phase == 6 {
-                    1
-                } else {
-                    2
-                },
-            ),
-            1 => (
-                ["Record", "Edit", "Export"],
+                ["Opnemen", "Bewerken", "Exporteren"],
                 if phase < 7 {
                     0
                 } else if phase < 9 {
@@ -2580,7 +2296,7 @@ impl OnboardingWindow {
                 },
             ),
             _ => (
-                ["Select area", "Beautify", "Copy"],
+                ["Kader kiezen", "Opmaken", "Kopiëren"],
                 if phase <= 5 {
                     0
                 } else if phase <= 8 {
@@ -2590,7 +2306,7 @@ impl OnboardingWindow {
                 },
             ),
         };
-        let content = if index == 2 {
+        let content = if index == 1 {
             self.demo_screenshot()
         } else if phase <= 1 {
             div()
@@ -2602,8 +2318,6 @@ impl OnboardingWindow {
                 .into_any_element()
         } else if phase <= 6 {
             self.demo_recording().into_any_element()
-        } else if index == 0 {
-            self.demo_link().into_any_element()
         } else {
             self.demo_editor().into_any_element()
         };
@@ -2642,12 +2356,9 @@ impl Render for OnboardingWindow {
         let content = match self.step {
             Step::Permissions => self.render_permissions(cx),
             Step::Overview => self.render_overview(),
-            Step::Instant => self.render_detail(0),
-            Step::Studio => self.render_detail(1),
-            Step::Screenshot => self.render_detail(2),
+            Step::Studio => self.render_detail(0),
+            Step::Screenshot => self.render_detail(1),
             Step::Toggle => self.render_toggle(cx),
-            Step::Shortcuts => self.render_shortcuts(),
-            Step::Faq => self.render_faq(cx),
         };
         let content = div().relative().min_h_full().w_full().child(content);
         let step_visible = !self.welcome || self.welcome_exiting;
@@ -2779,14 +2490,14 @@ mod tests {
 
     #[test]
     fn first_run_visits_every_platform_stage_and_back_never_opens_an_omitted_step() {
-        for (macos, expected) in [(true, 8), (false, 7)] {
+        for (macos, expected) in [(true, 5), (false, 4)] {
             let first = Step::first(macos, false);
             let mut visited = vec![first];
             while let Some(next) = visited.last().unwrap().next(false, true) {
                 visited.push(next);
             }
             assert_eq!(visited.len(), expected);
-            assert_eq!(visited.last(), Some(&Step::Faq));
+            assert_eq!(visited.last(), Some(&Step::LAST));
             for pair in visited.windows(2).rev() {
                 assert_eq!(pair[1].previous(first), Some(pair[0]));
             }

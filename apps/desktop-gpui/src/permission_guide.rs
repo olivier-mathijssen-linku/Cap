@@ -323,8 +323,8 @@ impl Render for PermissionGuide {
         // The arrow bobs forever; a hidden panel must not keep drawing.
         let still = self.hidden;
         let pane = match self.permission {
-            OSPermission::Accessibility => "Accessibility",
-            _ => "Screen & System Audio Recording",
+            OSPermission::Accessibility => "Toegankelijkheid",
+            _ => "Scherm- en systeemaudio-opname",
         };
         div()
             .size_full()
@@ -391,7 +391,7 @@ impl Render for PermissionGuide {
                                     .line_height(px(19.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(paper.ink)
-                                    .child("Drag Kiekes into the list"),
+                                    .child("Sleep Kiekes in de lijst"),
                             )
                             .child(
                                 div()
@@ -400,7 +400,7 @@ impl Render for PermissionGuide {
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(paper.soft)
                                     .child(format!(
-                                        "Drop it on the {pane} list above, then make sure its switch is on."
+                                        "Zet hem op de lijst {pane} hierboven en controleer of de schakelaar aan staat."
                                     )),
                             ),
                     )

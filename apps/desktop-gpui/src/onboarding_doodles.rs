@@ -206,15 +206,6 @@ pub static UP_ARROW: Doodle = Doodle {
     ],
 };
 
-/// The accent swoosh under a heading, 132x12.
-pub static UNDERLINE: Doodle = Doodle {
-    view: (132., 12.),
-    strokes: &[Stroke::ink("M 4 8 C 34 4 78 3 128 6")
-        .with_ink(Ink::Accent)
-        .width(3.5)
-        .draw(350, 650)],
-};
-
 /// Instant mode: the web recorder's upload cloud, arrow bobbing.
 pub static UPLOAD: Doodle = Doodle {
     view: (120., 104.),

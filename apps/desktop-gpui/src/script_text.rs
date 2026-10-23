@@ -1,6 +1,6 @@
 //! Script lettering drawn from pre-shaped glyph outlines (Damion, set with
 //! HarfBuzz offline), so the face needs no font loading: the camera
-//! preview's "loading" and the welcome screen's "Welcome".
+//! preview's "loading" and the welcome screen's "Welkom".
 
 use std::cell::RefCell;
 

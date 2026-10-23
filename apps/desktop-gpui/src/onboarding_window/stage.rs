@@ -5,6 +5,7 @@
 //! grant/denied classification are still `OnboardingWindow::act`, the poll
 //! task and [`PermissionsState`](crate::permissions_ui::PermissionsState).
 
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -46,7 +47,7 @@ impl Paper {
                 card: rgba(0xffffff0d).into(),
                 ink: rgb(0xf2f2f3).into(),
                 soft: rgb(0x8e8e96).into(),
-                accent: rgb(0x4d8dff).into(),
+                accent: rgb(0x7193dc).into(),
                 red: rgb(0xff6369).into(),
                 green: rgb(0x3dd68c).into(),
                 track: rgb(0x3a3a40).into(),
@@ -57,7 +58,7 @@ impl Paper {
                 card: rgba(0xffffffa6).into(),
                 ink: rgb(0x20242c).into(),
                 soft: rgb(0x8b8f98).into(),
-                accent: rgb(0x4785ff).into(),
+                accent: rgb(0x3b66c4).into(),
                 red: rgb(0xe5484d).into(),
                 green: rgb(0x2f9e69).into(),
                 track: rgb(0xdcdcd4).into(),
@@ -80,6 +81,7 @@ impl Paper {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Stage {
     Permission(OSPermission),
+    Drive,
     AllSet,
 }
 
@@ -102,11 +104,26 @@ pub(super) struct StageState {
     shown_at: Instant,
     marks: [(Mark, Instant); 4],
     granted: [bool; 4],
-    page_at: Instant,
     /// Screen Recording was already granted when Cap launched. A grant that
     /// lands mid-session only reaches capture after a restart.
     screen_at_launch: bool,
     advance: Option<gpui::Task<()>>,
+    drive: DriveState,
+}
+
+/// The optional Google Drive step after the permissions. Leaving the step
+/// keeps a sign-in running; dropping `task` aborts it.
+struct DriveState {
+    connected: bool,
+    skipped: bool,
+    focused: bool,
+    /// Holds the connected card on stage for [`ADVANCE_AFTER`].
+    holding: bool,
+    url: Option<String>,
+    error: Option<String>,
+    mark: (Mark, Instant),
+    task: Option<gpui::Task<()>>,
+    hold: Option<gpui::Task<()>>,
 }
 
 impl StageState {
@@ -120,9 +137,19 @@ impl StageState {
             shown_at: now,
             marks: [(Mark::Pending, now); 4],
             granted,
-            page_at: now,
             screen_at_launch: granted[0],
             advance: None,
+            drive: DriveState {
+                connected: crate::direct_drive::enabled() && cap_direct_drive::is_connected(),
+                skipped: false,
+                focused: false,
+                holding: false,
+                url: None,
+                error: None,
+                mark: (Mark::Pending, now),
+                task: None,
+                hold: None,
+            },
         }
     }
 }
@@ -143,38 +170,47 @@ struct Copy {
     doodle: &'static Doodle,
 }
 
+fn label(permission: OSPermission) -> &'static str {
+    match permission {
+        OSPermission::ScreenRecording => "Schermopname",
+        OSPermission::Accessibility => "Toegankelijkheid",
+        OSPermission::Microphone => "Microfoon",
+        OSPermission::Camera => "Camera",
+    }
+}
+
 fn copy_for(permission: OSPermission) -> Copy {
     match permission {
         OSPermission::ScreenRecording => Copy {
-            title: "Let Kiekes see your screen",
-            body: "Screen Recording lets Kiekes capture your displays, windows and system audio.",
-            done_title: "Screen recording is on",
-            done_body: "Kiekes can capture your screen.",
-            allow: "Allow screen recording",
+            title: "Laat Kiekes je scherm zien",
+            body: "Met schermopname kan Kiekes je schermen, vensters en het geluid van je Mac opnemen.",
+            done_title: "Schermopname staat aan",
+            done_body: "Kiekes kan je scherm opnemen.",
+            allow: "Schermopname toestaan",
             doodle: &art::SCREEN,
         },
         OSPermission::Accessibility => Copy {
-            title: "Let Kiekes follow your cursor",
-            body: "Accessibility lets Kiekes see your clicks and cursor, on this Mac only, so auto zoom knows where to look.",
-            done_title: "Accessibility is on",
-            done_body: "Auto zoom can follow your clicks.",
-            allow: "Allow accessibility",
+            title: "Laat Kiekes je cursor volgen",
+            body: "Met toegankelijkheid ziet Kiekes je klikken en je cursor, alleen op deze Mac, zodat automatisch inzoomen weet waar het moet kijken.",
+            done_title: "Toegankelijkheid staat aan",
+            done_body: "Automatisch inzoomen kan je klikken volgen.",
+            allow: "Toegankelijkheid toestaan",
             doodle: &art::CURSOR,
         },
         OSPermission::Microphone => Copy {
-            title: "Let Kiekes hear you",
-            body: "Add your voice to your recordings. You can skip this and turn it on later.",
-            done_title: "Microphone is on",
-            done_body: "Your voice can be in your recordings.",
-            allow: "Allow microphone",
+            title: "Laat Kiekes je horen",
+            body: "Zet je stem in je opnames. Je kunt dit overslaan en later aanzetten.",
+            done_title: "De microfoon staat aan",
+            done_body: "Je stem kan in je opnames.",
+            allow: "Microfoon toestaan",
             doodle: &art::MICROPHONE,
         },
         OSPermission::Camera => Copy {
-            title: "Let Kiekes see you",
-            body: "Show yourself in a corner of your recordings. Skip it if you don't need it.",
-            done_title: "Camera is on",
-            done_body: "You can add your camera to any recording.",
-            allow: "Allow camera",
+            title: "Laat Kiekes je zien",
+            body: "Zet jezelf in een hoekje van je opname. Niet nodig? Sla het gerust over.",
+            done_title: "De camera staat aan",
+            done_body: "Je kunt je camera aan elke opname toevoegen.",
+            allow: "Camera toestaan",
             doodle: &art::CAMERA,
         },
     }
@@ -191,6 +227,10 @@ impl OnboardingWindow {
         self.stage.skipped.contains(&permission)
     }
 
+    fn drive_offered(&self) -> bool {
+        crate::direct_drive::enabled()
+    }
+
     pub(super) fn current_stage(&self) -> Stage {
         let shown: Vec<(OSPermission, OSPermissionStatus)> = self.state.shown().collect();
         if let Some(focused) = self.stage.focused
@@ -198,11 +238,21 @@ impl OnboardingWindow {
         {
             return Stage::Permission(focused);
         }
+        let drive = &self.stage.drive;
+        if self.drive_offered() && (drive.focused || drive.holding) {
+            return Stage::Drive;
+        }
         shown
             .iter()
             .find(|(permission, status)| !status.permitted() && !self.is_skipped(*permission))
             .map(|(permission, _)| Stage::Permission(*permission))
-            .unwrap_or(Stage::AllSet)
+            .unwrap_or(
+                if self.drive_offered() && !drive.connected && !drive.skipped {
+                    Stage::Drive
+                } else {
+                    Stage::AllSet
+                },
+            )
     }
 
     /// Reconcile focus, marks and entrance clocks with the latest grants.
@@ -243,6 +293,7 @@ impl OnboardingWindow {
         let stage = self.current_stage();
         let stage_done = match stage {
             Stage::Permission(permission) => granted[index(permission)],
+            Stage::Drive => self.stage.drive.connected,
             Stage::AllSet => true,
         };
         if self.stage.shown != Some((stage, stage_done)) {
@@ -284,10 +335,25 @@ impl OnboardingWindow {
                 self.stage.marks[i] = (mark, now);
             }
         }
+        let drive = &mut self.stage.drive;
+        let mark = if drive.connected {
+            Mark::Granted
+        } else if drive.skipped {
+            Mark::Skipped
+        } else if stage == Stage::Drive {
+            Mark::Active
+        } else {
+            Mark::Pending
+        };
+        if drive.mark.0 != mark {
+            drive.mark = (mark, now);
+        }
     }
 
     fn focus_permission(&mut self, permission: OSPermission, cx: &mut Context<Self>) {
         self.stage.advance = None;
+        self.stage.drive.focused = false;
+        self.stage.drive.holding = false;
         self.stage.focused = Some(permission);
         self.stage.skipped.retain(|&skipped| skipped != permission);
         cx.notify();
@@ -310,6 +376,91 @@ impl OnboardingWindow {
         cx.notify();
     }
 
+    fn focus_drive(&mut self, cx: &mut Context<Self>) {
+        self.stage.advance = None;
+        self.stage.focused = None;
+        self.stage.drive.focused = true;
+        self.stage.drive.skipped = false;
+        cx.notify();
+    }
+
+    fn skip_drive(&mut self, cx: &mut Context<Self>) {
+        let drive = &mut self.stage.drive;
+        drive.task = None;
+        drive.url = None;
+        drive.error = None;
+        drive.focused = false;
+        drive.skipped = true;
+        cx.notify();
+    }
+
+    fn connect_drive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.stage.drive.task.is_some() {
+            return;
+        }
+        self.stage.drive.error = None;
+        self.stage.drive.url = None;
+        self.stage.drive.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let authorization =
+                match gpui_tokio::Tokio::spawn(cx, cap_direct_drive::begin_authorization()).await {
+                    Ok(Ok(authorization)) => authorization,
+                    Ok(Err(error)) => {
+                        this.update(cx, |this, cx| this.drive_failed(error, cx))
+                            .ok();
+                        return;
+                    }
+                    Err(_) => return,
+                };
+            let url = authorization.url.clone();
+            this.update(cx, |this, cx| {
+                cx.open_url(&url);
+                this.stage.drive.url = Some(url);
+                cx.notify();
+            })
+            .ok();
+            let completed = gpui_tokio::Tokio::spawn(cx, async move {
+                authorization.complete(&AtomicBool::new(false)).await
+            })
+            .await;
+            this.update_in(cx, |this, window, cx| match completed {
+                Ok(Ok(())) => this.drive_connected(window, cx),
+                Ok(Err(error)) => this.drive_failed(error, cx),
+                Err(_) => {}
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn drive_failed(&mut self, error: String, cx: &mut Context<Self>) {
+        let drive = &mut self.stage.drive;
+        drive.task = None;
+        drive.url = None;
+        drive.error = Some(error);
+        cx.notify();
+    }
+
+    fn drive_connected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let drive = &mut self.stage.drive;
+        drive.task = None;
+        drive.url = None;
+        drive.error = None;
+        drive.connected = true;
+        drive.skipped = false;
+        drive.focused = false;
+        drive.holding = true;
+        drive.hold = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(ADVANCE_AFTER).await;
+            this.update(cx, |this, cx| {
+                this.stage.drive.holding = false;
+                this.stage.drive.hold = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
     pub(super) fn render_permissions(&self, cx: &mut Context<Self>) -> AnyElement {
         let paper = Paper::new(&self.theme);
         div()
@@ -329,13 +480,13 @@ impl OnboardingWindow {
     fn render_checklist(&self, paper: &Paper, cx: &mut Context<Self>) -> Div {
         let (title, lede) = if self.permissions_only {
             (
-                "Kiekes needs a permission back",
-                "Something was switched off in System Settings. Turn it back on to keep recording.",
+                "Kiekes mist een toestemming",
+                "Er is iets uitgezet in Systeeminstellingen. Zet het weer aan om te kunnen opnemen.",
             )
         } else {
             (
-                "Let's get Kiekes ready",
-                "macOS asks you to OK a few things first. It only takes a minute.",
+                "Kiekes klaarzetten",
+                "macOS vraagt eerst om een paar keer ‘oké’. Het kost maar een minuutje.",
             )
         };
         let stage = self.current_stage();
@@ -352,14 +503,6 @@ impl OnboardingWindow {
                     .text_color(paper.ink)
                     .child(title),
             )
-            .child(div().mt(px(2.)).child(doodle::doodle(
-                &art::UNDERLINE,
-                paper.palette(),
-                self.stage.page_at,
-                !self.animated,
-                132.,
-                12.,
-            )))
             .child(
                 div()
                     .mt(px(10.))
@@ -369,17 +512,51 @@ impl OnboardingWindow {
                     .text_color(paper.soft)
                     .child(lede),
             )
-            .child(div().mt(px(26.)).flex().flex_col().gap(px(6.)).children(
-                self.state.shown().map(|(permission, status)| {
-                    self.render_check_row(
-                        paper,
-                        permission,
-                        status,
-                        stage == Stage::Permission(permission),
-                        cx,
-                    )
-                }),
-            ))
+            .child(
+                div()
+                    .mt(px(26.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .children(self.state.shown().map(|(permission, status)| {
+                        self.render_check_row(
+                            paper,
+                            permission,
+                            status,
+                            stage == Stage::Permission(permission),
+                            cx,
+                        )
+                    }))
+                    .when(self.drive_offered(), |list| {
+                        list.child(self.render_drive_row(paper, stage == Stage::Drive, cx))
+                    }),
+            )
+    }
+
+    fn render_drive_row(&self, paper: &Paper, active: bool, cx: &mut Context<Self>) -> AnyElement {
+        let drive = &self.stage.drive;
+        let caption = if drive.connected {
+            ("Gekoppeld", paper.green)
+        } else if drive.skipped {
+            ("Overgeslagen", paper.soft)
+        } else if drive.task.is_some() {
+            ("Bezig in je browser", paper.soft)
+        } else {
+            ("Mag ook later", paper.soft)
+        };
+        check_row(
+            paper,
+            "perm-row-drive",
+            "Google Drive",
+            caption,
+            drive.mark,
+            !self.animated,
+            active,
+        )
+        .when(!active, |row| {
+            row.on_click(cx.listener(|this, _, _, cx| this.focus_drive(cx)))
+        })
+        .into_any_element()
     }
 
     fn render_check_row(
@@ -390,82 +567,30 @@ impl OnboardingWindow {
         active: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (mark, mark_at) = self.stage.marks[index(permission)];
-        let doodle = match mark {
-            Mark::Pending => &art::MARK_PENDING,
-            Mark::Active => &art::MARK_ACTIVE,
-            Mark::Granted => &art::MARK_GRANTED,
-            Mark::Skipped => &art::MARK_SKIPPED,
-        };
-        let (caption, caption_color) = if status.permitted() {
-            ("Allowed", paper.green)
+        let caption = if status.permitted() {
+            ("Geregeld", paper.green)
         } else if self.is_skipped(permission) {
-            ("Skipped for now", paper.soft)
+            ("Overgeslagen", paper.soft)
         } else if status == OSPermissionStatus::Denied {
-            ("Off in System Settings", paper.red)
+            ("Uit in Systeeminstellingen", paper.red)
         } else if permission.required() {
-            ("Required", paper.soft)
+            ("Nodig om op te nemen", paper.soft)
         } else {
-            ("Optional", paper.soft)
+            ("Mag ook later", paper.soft)
         };
-        let paper = *paper;
-        div()
-            .id(SharedString::from(format!(
-                "perm-row-{}",
-                permission.label()
-            )))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(12.))
-            .h(px(56.))
-            .px(px(12.))
-            .rounded(px(14.))
-            .border(px(1.5))
-            .border_color(if active {
-                paper.ink
-            } else {
-                gpui::transparent_black()
-            })
-            .when(active, |row| row.bg(paper.card))
-            .when(!active, |row| {
-                row.cursor_pointer()
-                    .hover(move |row| row.bg(paper.card))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.focus_permission(permission, cx)),
-                    )
-            })
-            .child(doodle::doodle(
-                doodle,
-                paper.palette(),
-                mark_at,
-                !self.animated,
-                30.,
-                30.,
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(paper.ink)
-                            .child(permission.label()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(caption_color)
-                            .child(caption),
-                    ),
-            )
-            .into_any_element()
+        check_row(
+            paper,
+            SharedString::from(format!("perm-row-{}", permission.label())),
+            label(permission),
+            caption,
+            self.stage.marks[index(permission)],
+            !self.animated,
+            active,
+        )
+        .when(!active, |row| {
+            row.on_click(cx.listener(move |this, _, _, cx| this.focus_permission(permission, cx)))
+        })
+        .into_any_element()
     }
 
     fn render_stage(&self, paper: &Paper, cx: &mut Context<Self>) -> AnyElement {
@@ -498,15 +623,15 @@ impl OnboardingWindow {
                     168.,
                     146.,
                 ))
-                .child(stage_title(paper, "One restart and you're set"))
+                .child(stage_title(paper, "Nog één keer opnieuw starten"))
                 .child(stage_body(
                     paper,
-                    "macOS turns on screen recording once Kiekes restarts. You'll pick up right here.",
+                    "macOS zet schermopname aan zodra Kiekes opnieuw start. Je gaat daarna hier verder.",
                 ))
                 .child(div().mt(px(24.)).child(paper_button(
                     paper,
                     "perm-relaunch-done",
-                    "Relaunch Kiekes",
+                    "Kiekes opnieuw starten",
                     true,
                     true,
                     cx.listener(|_, _, _, cx| permissions::relaunch(cx)),
@@ -520,15 +645,16 @@ impl OnboardingWindow {
                     168.,
                     146.,
                 ))
-                .child(stage_title(paper, "You're all set"))
+                .child(stage_title(paper, "Alles staat klaar"))
                 .child(stage_body(
                     paper,
                     if self.permissions_only {
-                        "Thanks. Kiekes can record again."
+                        "Dank je. Kiekes kan weer opnemen."
                     } else {
-                        "Kiekes has everything it needs. Next, a quick look at what it can do."
+                        "Kiekes heeft alles wat het nodig heeft. Nu even kort wat je ermee kunt."
                     },
                 )),
+            Stage::Drive => self.render_drive_stage(card, paper, cx),
             Stage::Permission(permission) => {
                 let copy = copy_for(permission);
                 let status = self.state.status(permission);
@@ -548,7 +674,7 @@ impl OnboardingWindow {
                             copy.done_title
                         } else if self.stage.waiting_on == Some(permission) && permission.required()
                         {
-                            "Switch Kiekes on in System Settings"
+                            "Zet Kiekes aan in Systeeminstellingen"
                         } else {
                             copy.title
                         },
@@ -557,12 +683,13 @@ impl OnboardingWindow {
                     let done_body = if permission == OSPermission::ScreenRecording
                         && self.needs_relaunch()
                     {
-                        "macOS applies it after Kiekes restarts. You can do that once you're done here."
+                        "macOS past het toe als Kiekes opnieuw start. Dat kan zodra je hier klaar bent."
                     } else {
                         copy.done_body
                     };
                     card.child(stage_body(paper, done_body)).child(allowed_pill(
                         paper,
+                        "Toegestaan",
                         self.stage.marks[index(permission)].1,
                         still,
                     ))
@@ -573,6 +700,129 @@ impl OnboardingWindow {
         };
 
         card.into_any_element()
+    }
+
+    fn render_drive_stage(
+        &self,
+        card: gpui::Stateful<Div>,
+        paper: &Paper,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let drive = &self.stage.drive;
+        let still = !self.animated;
+        let card = card.child(doodle::doodle(
+            &art::UPLOAD,
+            paper.palette(),
+            self.stage.shown_at,
+            still,
+            168.,
+            146.,
+        ));
+        if drive.connected {
+            return card
+                .child(stage_title(paper, "Google Drive is gekoppeld"))
+                .child(stage_body(
+                    paper,
+                    "Je opnames gaan naar Google Drive. Bij het exporteren kies je zelf de map.",
+                ))
+                .child(allowed_pill(paper, "Gekoppeld", drive.mark.1, still));
+        }
+        let connecting = drive.task.is_some();
+        let (title, body) = if connecting {
+            (
+                "Rond het af in je browser",
+                "Log in met je Google-account van Linku en kies Toestaan. Kom daarna hier terug.",
+            )
+        } else {
+            (
+                "Koppel Google Drive",
+                "Kiekes zet je opnames in Google Drive, zodat je ze makkelijk kunt delen. Je kunt dit ook later doen in Instellingen.",
+            )
+        };
+        let reopen = drive.url.clone();
+        let card = card
+            .child(stage_title(paper, title))
+            .child(stage_body(paper, body))
+            .child(
+                div()
+                    .mt(px(24.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(10.))
+                    .child(if connecting {
+                        paper_button(
+                            paper,
+                            "drive-reopen",
+                            "Browser opnieuw openen",
+                            true,
+                            reopen.is_some(),
+                            move |_, _, cx| {
+                                if let Some(url) = &reopen {
+                                    cx.open_url(url);
+                                }
+                            },
+                        )
+                    } else {
+                        paper_button(
+                            paper,
+                            "drive-connect",
+                            "Google Drive koppelen",
+                            true,
+                            true,
+                            cx.listener(|this, _, window, cx| this.connect_drive(window, cx)),
+                        )
+                    })
+                    .child(paper_button(
+                        paper,
+                        "drive-skip",
+                        if connecting { "Annuleren" } else { "Later" },
+                        false,
+                        true,
+                        cx.listener(|this, _, _, cx| this.skip_drive(cx)),
+                    )),
+            );
+        let card = if connecting {
+            card.child(
+                div()
+                    .mt(px(18.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(doodle::doodle(
+                        &art::WAITING,
+                        paper.palette(),
+                        self.stage.shown_at,
+                        still,
+                        150.,
+                        16.,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(paper.soft)
+                            .child("Wachten op Google"),
+                    ),
+            )
+        } else {
+            card
+        };
+        card.when_some(drive.error.clone(), |card, error| {
+            card.child(
+                div()
+                    .mt(px(16.))
+                    .max_w(px(320.))
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(paper.red)
+                    .text_center()
+                    .child(error),
+            )
+        })
     }
 
     fn render_stage_actions(
@@ -590,21 +840,21 @@ impl OnboardingWindow {
         let guided = crate::permission_guide::eligible(permission);
         let waiting_required = waiting && permission.required();
         let body = if waiting_required && guided {
-            "Drag Kiekes from the panel under System Settings into the list. Already listed? Just switch it on."
+            "Sleep Kiekes uit het paneeltje onder Systeeminstellingen in de lijst. Staat hij er al? Zet dan de schakelaar aan."
         } else if waiting_required {
-            "Find Kiekes in the list and switch it on. If macOS asked first, choose Open System Settings."
+            "Zoek Kiekes in de lijst en zet hem aan. Vroeg macOS het eerst? Kies dan Open Systeeminstellingen."
         } else if status == OSPermissionStatus::Denied && !permission.required() {
-            "It was turned off earlier, so switch Kiekes on in System Settings. Or skip it for now."
+            "Dit is eerder uitgezet. Zet Kiekes aan in Systeeminstellingen, of sla het voor nu over."
         } else if action == Some(RowAction::OpenSettings) && permission.required() {
-            "Open System Settings, find Kiekes in the list and switch it on."
+            "Open Systeeminstellingen, zoek Kiekes in de lijst en zet hem aan."
         } else {
             copy.body
         };
         let primary_label = if waiting_required {
-            "Open System Settings again"
+            "Systeeminstellingen opnieuw openen"
         } else {
             match action {
-                Some(RowAction::OpenSettings) => "Open System Settings",
+                Some(RowAction::OpenSettings) => "Systeeminstellingen openen",
                 _ => copy.allow,
             }
         };
@@ -629,7 +879,7 @@ impl OnboardingWindow {
                     row.child(paper_button(
                         &paper_copy,
                         SharedString::from(format!("perm-skip-{}", permission.label())),
-                        "Skip for now",
+                        "Later",
                         false,
                         true,
                         cx.listener(move |this, _, _, cx| this.skip_permission(permission, cx)),
@@ -658,12 +908,12 @@ impl OnboardingWindow {
                             .text_size(px(12.))
                             .font_weight(FontWeight::NORMAL)
                             .text_color(paper.soft)
-                            .child("No prompt showed up? Switch Kiekes on in System Settings."),
+                            .child("Geen venster gezien? Zet Kiekes aan in Systeeminstellingen."),
                     )
                     .child(paper_button(
                         paper,
                         SharedString::from(format!("perm-settings-{}", permission.label())),
-                        "Open System Settings",
+                        "Systeeminstellingen openen",
                         false,
                         true,
                         cx.listener(move |this, _, _, cx| {
@@ -675,9 +925,9 @@ impl OnboardingWindow {
             )
         } else if waiting {
             let hint = if permission.required() || action == Some(RowAction::OpenSettings) {
-                "Waiting for System Settings"
+                "Wachten op Systeeminstellingen"
             } else {
-                "Choose Allow in the macOS prompt"
+                "Kies Sta toe in het venster van macOS"
             };
             card.child(
                 div()
@@ -728,12 +978,12 @@ impl OnboardingWindow {
                             .line_height(px(17.))
                             .font_weight(FontWeight::NORMAL)
                             .text_color(paper.soft)
-                            .child("Switched on but still waiting? Restart Kiekes to apply it."),
+                            .child("Staat hij aan maar gebeurt er niets? Start Kiekes opnieuw, dan pakt macOS het op."),
                     )
                     .child(paper_button(
                         paper,
                         "perm-relaunch",
-                        "Relaunch",
+                        "Opnieuw starten",
                         false,
                         true,
                         cx.listener(|_, _, _, cx| permissions::relaunch(cx)),
@@ -768,7 +1018,74 @@ fn stage_body(paper: &Paper, body: &'static str) -> Div {
         .child(body)
 }
 
-fn allowed_pill(paper: &Paper, shown_at: Instant, still: bool) -> Div {
+fn check_row(
+    paper: &Paper,
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+    (caption, caption_color): (&'static str, Hsla),
+    (mark, mark_at): (Mark, Instant),
+    still: bool,
+    active: bool,
+) -> gpui::Stateful<Div> {
+    let doodle = match mark {
+        Mark::Pending => &art::MARK_PENDING,
+        Mark::Active => &art::MARK_ACTIVE,
+        Mark::Granted => &art::MARK_GRANTED,
+        Mark::Skipped => &art::MARK_SKIPPED,
+    };
+    let paper = *paper;
+    div()
+        .id(id.into())
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(12.))
+        .h(px(52.))
+        .px(px(12.))
+        .rounded(px(14.))
+        .border(px(1.5))
+        .border_color(if active {
+            paper.accent
+        } else {
+            gpui::transparent_black()
+        })
+        .when(active, |row| row.bg(paper.card))
+        .when(!active, |row| {
+            row.cursor_pointer().hover(move |row| row.bg(paper.card))
+        })
+        .child(doodle::doodle(
+            doodle,
+            paper.palette(),
+            mark_at,
+            still,
+            30.,
+            30.,
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(paper.ink)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(caption_color)
+                        .child(caption),
+                ),
+        )
+}
+
+fn allowed_pill(paper: &Paper, label: &'static str, shown_at: Instant, still: bool) -> Div {
     div()
         .mt(px(24.))
         .flex()
@@ -790,7 +1107,7 @@ fn allowed_pill(paper: &Paper, shown_at: Instant, still: bool) -> Div {
             22.,
             22.,
         ))
-        .child("Allowed")
+        .child(label)
 }
 
 /// The extension's `.cta`: an ink pill. Primary is filled; secondary is the
@@ -805,7 +1122,7 @@ pub(super) fn paper_button(
 ) -> gpui::Stateful<Div> {
     let paper = *paper;
     let (bg, fg, border) = if primary {
-        (paper.ink, paper.bg, paper.ink)
+        (paper.accent, gpui::white(), paper.accent)
     } else {
         (gpui::transparent_black(), paper.ink, paper.track)
     };
