@@ -226,8 +226,8 @@ const MODES: [ModeDetail; 3] = [
 
 const FAQ: [(&str, &str); 5] = [
     (
-        "Is Cap free to use?",
-        "Cap is free for personal use. For teams and commercial use, check out our pricing plans.",
+        "What is Kiekes?",
+        "Kiekes is Linku's own recording tool, built on the open-source Kiekes project.",
     ),
     (
         "What's the difference between Instant and Studio?",
@@ -235,7 +235,7 @@ const FAQ: [(&str, &str); 5] = [
     ),
     (
         "Where are my recordings stored?",
-        "All recordings are stored locally on your computer. In Instant mode, they're also uploaded to Cap's cloud for easy sharing. You can manage storage in Settings.",
+        "All recordings are stored locally on your computer. When you export to Drive, a copy is uploaded to the Google Drive folder you choose. You can manage storage in Settings.",
     ),
     (
         "Can I change my shortcuts later?",
@@ -243,7 +243,7 @@ const FAQ: [(&str, &str); 5] = [
     ),
     (
         "How does sharing work?",
-        "In Instant mode, you get a shareable link automatically when you stop recording. In Studio mode, export your edited video and share via Cap's cloud or save locally.",
+        "Export your edited video to Google Drive and copy its link, or save it to a file or the clipboard.",
     ),
 ];
 
@@ -1341,7 +1341,7 @@ impl OnboardingWindow {
     fn render_overview(&self) -> AnyElement {
         let theme = self.theme;
         div().flex().flex_col().items_center().justify_center().min_h_full().px(px(40.)).gap(px(32.))
-            .child(self.heading("One app, every workflow", "Whether you need speed, studio quality, or a quick screenshot — Cap has a mode for it."))
+            .child(self.heading("One app, every workflow", "Whether you need speed, studio quality, or a quick screenshot — Kiekes has a mode for it."))
             .child(div().flex().gap(px(16.)).w_full().max_w(px(540.)).children(MODES.iter().enumerate().map(|(index, mode)| {
                 let paper = stage::Paper::new(&theme);
                 let card = self.paper_card().flex_1().min_w_0().flex().flex_col().items_center().gap(px(10.)).px(px(20.)).pt(px(22.)).pb(px(24.))
@@ -1539,7 +1539,7 @@ impl OnboardingWindow {
     fn render_shortcuts(&self) -> AnyElement {
         let theme = self.theme;
         div().flex().flex_col().items_center().justify_center().min_h_full().px(px(48.)).gap(px(24.))
-            .child(self.heading("Make Cap yours", "Customize everything from keyboard shortcuts to storage. Cap adapts to your workflow."))
+            .child(self.heading("Make Kiekes yours", "Customize everything from keyboard shortcuts to storage. Kiekes adapts to your workflow."))
             .child(div().flex().flex_col().w_full().max_w(px(420.)).gap(px(8.)).children([
                 ("Keyboard Shortcuts", "Global hotkeys for recording, screenshots, and switching modes"),
                 ("Custom S3 Storage", "Connect your own S3-compatible bucket for full control over your recordings"),
@@ -1654,11 +1654,11 @@ impl OnboardingWindow {
         let last = self.permissions_only || self.step == Step::Faq;
         let relaunch = self.step == Step::Permissions && !disabled && self.needs_relaunch();
         let label = if relaunch {
-            "Relaunch Cap"
+            "Relaunch Kiekes"
         } else if self.permissions_only {
-            "Continue to Cap"
+            "Continue to Kiekes"
         } else if last {
-            "Start Using Cap"
+            "Start Using Kiekes"
         } else {
             "Continue"
         };
@@ -2205,7 +2205,7 @@ impl OnboardingWindow {
                             .items_center()
                             .gap(px(8.))
                             .child(self.demo_window_dots())
-                            .child(copy("Cap Editor", 10., theme.gray_11)),
+                            .child(copy("Kiekes Editor", 10., theme.gray_11)),
                     )
                     .child(
                         copy("Export", 9., gpui::white())

@@ -1374,7 +1374,7 @@ fn transcription_hints() -> Vec<String> {
             .map(str::to_string)
             .collect(),
         None => vec![
-            "Cap".to_string(),
+            "Kiekes".to_string(),
             "TypeScript".to_string(),
             "My Brand Name".to_string(),
             "mywebsite.com".to_string(),

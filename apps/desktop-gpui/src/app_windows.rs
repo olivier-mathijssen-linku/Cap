@@ -1197,7 +1197,7 @@ pub fn open_settings(page: Page, cx: &mut App) {
             // repositions them. (The main window returns `None` there and
             // hand-draws its own.)
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Cap Settings".into()),
+                title: Some("Kiekes Settings".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(settings_window::TRAFFIC_LIGHTS),
             }),
@@ -1381,7 +1381,7 @@ pub fn open_onboarding(cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            window.set_window_title("Welcome to Cap");
+            window.set_window_title("Welcome to Kiekes");
             cx.new(|cx| OnboardingWindow::new(window, cx))
         },
     );
@@ -1526,7 +1526,7 @@ pub fn open_mode_select(cx: &mut App) -> bool {
             // puts them and only the title is hidden (`hidden_title(true)` +
             // `TitleBarStyle::Overlay`).
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Cap Mode Selection".into()),
+                title: Some("Kiekes Mode Selection".into()),
                 appears_transparent: true,
                 traffic_light_position: mode_select_window::TRAFFIC_LIGHTS,
             }),
@@ -1645,7 +1645,7 @@ pub fn open_teleprompter(cx: &mut App) {
             // true`, `trafficLightPosition: (14, 14)` -- the real AppKit
             // buttons, moved, as on the settings window.
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Cap Teleprompter".into()),
+                title: Some("Kiekes Teleprompter".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(teleprompter_window::TRAFFIC_LIGHTS),
             }),
@@ -2611,16 +2611,16 @@ impl OwnWindow {
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Main => "Cap",
-            Self::Settings => "Cap Settings",
-            Self::Controls => "Cap Recording Controls",
-            Self::Camera => "Cap Camera",
-            Self::ModeSelect => "Cap Mode Selection",
-            Self::Teleprompter => "Cap Teleprompter",
-            Self::TargetSelect => "Cap Target Select",
-            Self::Editor => "Cap Editor",
-            Self::ScreenshotEditor => "Cap Screenshot Editor",
-            Self::Onboarding => "Welcome to Cap",
+            Self::Main => "Kiekes",
+            Self::Settings => "Kiekes Settings",
+            Self::Controls => "Kiekes Recording Controls",
+            Self::Camera => "Kiekes Camera",
+            Self::ModeSelect => "Kiekes Mode Selection",
+            Self::Teleprompter => "Kiekes Teleprompter",
+            Self::TargetSelect => "Kiekes Target Select",
+            Self::Editor => "Kiekes Editor",
+            Self::ScreenshotEditor => "Kiekes Screenshot Editor",
+            Self::Onboarding => "Welcome to Kiekes",
         }
     }
 }
@@ -3074,11 +3074,11 @@ pub(crate) fn clean_capture_camera_message(cx: &App) -> &'static str {
         .and_then(|lease| lease.config.as_ref())
         .is_some_and(|config| config.mode == RecordingMode::Instant)
     {
-        return "Cap will hide its preview and controls. Any selected camera will appear at its preview position with the selected shape and effects. Keep the whole preview inside the capture area. Opening Cap will stop this Instant recording before showing its controls.";
+        return "Kiekes will hide its preview and controls. Any selected camera will appear at its preview position with the selected shape and effects. Keep the whole preview inside the capture area. Opening Kiekes will stop this Instant recording before showing its controls.";
     }
     #[cfg(not(target_os = "linux"))]
     let _ = cx;
-    "Cap will hide its camera preview and recording controls. Any selected camera will keep recording as a separate editable track."
+    "Kiekes will hide its camera preview and recording controls. Any selected camera will keep recording as a separate editable track."
 }
 
 pub fn clean_capture_owned(cx: &App) -> bool {
@@ -3873,11 +3873,11 @@ pub fn open_camera_window(cx: &mut App) {
             titlebar: None,
             #[cfg(target_os = "linux")]
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Cap Camera".into()),
+                title: Some("Kiekes Camera".into()),
                 ..Default::default()
             }),
             #[cfg(target_os = "linux")]
-            app_id: Some("Cap".into()),
+            app_id: Some("Kiekes".into()),
             #[cfg(target_os = "linux")]
             window_decorations: Some(gpui::WindowDecorations::Client),
             // Non-activating panel, same as the bar: the bubble is clickable
@@ -4743,7 +4743,7 @@ fn open_editor_window(
             // `Some(Some(LogicalPosition::new(20.0, 32.0)))`, and the header's
             // left group reserves an `h-full w-16` spacer for them.
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Cap Editor".into()),
+                title: Some("Kiekes Editor".into()),
                 appears_transparent: true,
                 traffic_light_position: editor_window::TRAFFIC_LIGHTS,
             }),
@@ -5403,7 +5403,7 @@ async fn drive_auto_export(handle: WindowHandle<EditorWindow>, cx: &mut gpui::As
             .timer(std::time::Duration::from_millis(300))
             .await;
         let _ = handle.update(cx, |view, window, cx| {
-            view.open_export(window, cx);
+            view.ensure_export(window, cx);
             if let Some(export) = view.export.as_mut() {
                 let flags: Vec<&str> = page.split(',').collect();
                 export.advanced_open = flags.contains(&"advanced");
@@ -5423,7 +5423,7 @@ async fn drive_auto_export(handle: WindowHandle<EditorWindow>, cx: &mut gpui::As
         .timer(std::time::Duration::from_millis(300))
         .await;
     let _ = handle.update(cx, |view, window, cx| {
-        view.open_export(window, cx);
+        view.ensure_export(window, cx);
         if let Some(export) = view.export.as_mut() {
             export.destination = crate::editor_export::ExportDestination::File;
             export.format = if path.extension().is_some_and(|extension| extension == "gif") {
@@ -6021,7 +6021,7 @@ pub(crate) fn request_editor_deletion(
             platform::alert_dialog("Recording retained", &error);
             return;
         }
-        if !platform::confirm_dialog("Cap", "Are you sure you want to delete this recording?", "Yes", "No", false) {
+        if !platform::confirm_dialog("Kiekes", "Are you sure you want to delete this recording?", "Yes", "No", false) {
             return;
         }
         let prepared = cx.update(|cx| {
@@ -6085,7 +6085,7 @@ pub(crate) fn request_editor_deletion(
         let result = match futures_util::future::select(&mut task, &mut notice).await {
             futures_util::future::Either::Left((result, _)) => result,
             futures_util::future::Either::Right(_) => {
-                platform::alert_dialog("Deletion is still finishing", "Cap is waiting for recording cleanup to finish before completing this deletion.");
+                platform::alert_dialog("Deletion is still finishing", "Kiekes is waiting for recording cleanup to finish before completing this deletion.");
                 task.await
             }
         }.unwrap_or_else(|error| Err(format!("Recording deletion failed: {error}")));
@@ -6619,7 +6619,7 @@ pub fn open_screenshot_editor(path: PathBuf, cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             display_id,
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Cap Screenshot Editor".into()),
+                title: Some("Kiekes Screenshot Editor".into()),
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
@@ -7757,16 +7757,16 @@ mod tests {
     #[test]
     fn own_window_titles_match_cap_window_id() {
         let expected = [
-            (OwnWindow::Main, "Cap"),
-            (OwnWindow::Settings, "Cap Settings"),
-            (OwnWindow::Controls, "Cap Recording Controls"),
-            (OwnWindow::Camera, "Cap Camera"),
-            (OwnWindow::ModeSelect, "Cap Mode Selection"),
-            (OwnWindow::Teleprompter, "Cap Teleprompter"),
-            (OwnWindow::TargetSelect, "Cap Target Select"),
-            (OwnWindow::Editor, "Cap Editor"),
-            (OwnWindow::ScreenshotEditor, "Cap Screenshot Editor"),
-            (OwnWindow::Onboarding, "Welcome to Cap"),
+            (OwnWindow::Main, "Kiekes"),
+            (OwnWindow::Settings, "Kiekes Settings"),
+            (OwnWindow::Controls, "Kiekes Recording Controls"),
+            (OwnWindow::Camera, "Kiekes Camera"),
+            (OwnWindow::ModeSelect, "Kiekes Mode Selection"),
+            (OwnWindow::Teleprompter, "Kiekes Teleprompter"),
+            (OwnWindow::TargetSelect, "Kiekes Target Select"),
+            (OwnWindow::Editor, "Kiekes Editor"),
+            (OwnWindow::ScreenshotEditor, "Kiekes Screenshot Editor"),
+            (OwnWindow::Onboarding, "Welcome to Kiekes"),
         ];
         assert_eq!(OwnWindow::ALL.len(), expected.len());
         for (kind, title) in expected {
@@ -7792,12 +7792,12 @@ mod tests {
         assert_eq!(
             shared,
             vec![
-                &"Cap",
-                &"Cap Settings",
-                &"Cap Recording Controls",
-                &"Cap Camera",
-                &"Cap Mode Selection",
-                &"Cap Teleprompter",
+                &"Kiekes",
+                &"Kiekes Settings",
+                &"Kiekes Recording Controls",
+                &"Kiekes Camera",
+                &"Kiekes Mode Selection",
+                &"Kiekes Teleprompter",
             ]
         );
 
@@ -7808,9 +7808,9 @@ mod tests {
         assert_eq!(
             defaults_without_a_window,
             vec![
-                &"Cap Window Capture Occluder",
-                &"Cap Capture Area",
-                &"Cap Recordings Overlay",
+                &"Kiekes Window Capture Occluder",
+                &"Kiekes Capture Area",
+                &"Kiekes Recordings Overlay",
             ]
         );
 
@@ -7868,15 +7868,17 @@ mod tests {
     #[test]
     fn the_teleprompter_rule_is_always_present_and_never_duplicated() {
         let from_nothing = own_window_exclusion_rules(Vec::new(), RecordingMode::Instant);
-        assert_eq!(from_nothing, vec![title_rule("Cap Teleprompter")]);
+        assert_eq!(from_nothing, vec![title_rule("Kiekes Teleprompter")]);
         assert_eq!(
             excluded_own_windows(&from_nothing),
             vec![OwnWindow::Teleprompter]
         );
 
-        let already_configured =
-            own_window_exclusion_rules(vec![title_rule("Cap Teleprompter")], RecordingMode::Studio);
-        assert_eq!(already_configured, vec![title_rule("Cap Teleprompter")]);
+        let already_configured = own_window_exclusion_rules(
+            vec![title_rule("Kiekes Teleprompter")],
+            RecordingMode::Studio,
+        );
+        assert_eq!(already_configured, vec![title_rule("Kiekes Teleprompter")]);
     }
 
     /// Our own windows are matched on title *alone*
@@ -7891,12 +7893,12 @@ mod tests {
                 ..Default::default()
             },
             WindowExclusion {
-                owner_name: Some("Cap".to_string()),
+                owner_name: Some("Kiekes".to_string()),
                 ..Default::default()
             },
             WindowExclusion {
-                owner_name: Some("Cap".to_string()),
-                window_title: Some("Cap".to_string()),
+                owner_name: Some("Kiekes".to_string()),
+                window_title: Some("Kiekes".to_string()),
                 ..Default::default()
             },
         ];

@@ -35,7 +35,7 @@ use crate::{
 
 /// `productName` in `tauri.conf.json`, which is what macOS renames the first
 /// submenu to and what the About/Hide/Quit labels interpolate.
-pub const APP_NAME: &str = "Cap";
+pub const APP_NAME: &str = "Kiekes";
 
 /// `env!("CARGO_PKG_VERSION")`, exactly as `build_tray_menu` spells it -- this
 /// crate's version, which is the gpui app's own (0.1.x) rather than the
@@ -479,7 +479,7 @@ fn apply_quit_action(action: QuitAction, cx: &mut App) {
                     cx.global_mut::<QuitCoordinator>().gate.cancel_exit();
                     tracing::error!(%error, "quit canceled because editor changes could not be saved");
                     cx.spawn(async move |_| {
-                        platform::alert_dialog("Cap is still open", &error);
+                        platform::alert_dialog("Kiekes is still open", &error);
                     })
                     .detach();
                     return;
@@ -493,16 +493,16 @@ fn apply_quit_action(action: QuitAction, cx: &mut App) {
             cx.global_mut::<QuitCoordinator>().observer = None;
             let message = RecordingSession::global(cx).update(cx, |session, cx| {
                 let message = match session.error.as_deref() {
-                    Some(error) => format!("Quit canceled: {error}. Cap will stay open so you can finish or recover the recording."),
-                    None if action == QuitAction::TimedOut => "Quit canceled because recording shutdown is still pending. Cap will stay open. Use Stop once available, then try Quit again.".into(),
-                    None => "Quit canceled because recording shutdown could not be confirmed. Cap will stay open. Use Stop, then try Quit again.".into(),
+                    Some(error) => format!("Quit canceled: {error}. Kiekes will stay open so you can finish or recover the recording."),
+                    None if action == QuitAction::TimedOut => "Quit canceled because recording shutdown is still pending. Kiekes will stay open. Use Stop once available, then try Quit again.".into(),
+                    None => "Quit canceled because recording shutdown could not be confirmed. Kiekes will stay open. Use Stop, then try Quit again.".into(),
                 };
                 session.error = Some(message.clone());
                 cx.notify();
                 message
             });
             tracing::warn!(%message);
-            cx.spawn(async move |_| platform::alert_dialog("Cap is still open", &message))
+            cx.spawn(async move |_| platform::alert_dialog("Kiekes is still open", &message))
                 .detach();
         }
     }
@@ -903,16 +903,16 @@ mod tests {
             menus,
             vec![
                 (
-                    "Cap".to_string(),
+                    "Kiekes".to_string(),
                     vec![
-                        "About Cap".to_string(),
+                        "About Kiekes".to_string(),
                         "-".into(),
                         "Services".into(),
                         "-".into(),
-                        "Hide Cap".into(),
+                        "Hide Kiekes".into(),
                         "Hide Others".into(),
                         "-".into(),
-                        "Quit Cap".into(),
+                        "Quit Kiekes".into(),
                     ]
                 ),
                 ("File".into(), vec!["Close Window".into()]),

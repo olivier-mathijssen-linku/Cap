@@ -736,7 +736,7 @@ fn camera_issue(error: &str) -> (&'static str, &'static str) {
     if error.contains("access is unavailable") {
         return (
             "Camera access needed",
-            "Click to allow Cap to use your camera in System Settings.",
+            "Click to allow Kiekes to use your camera in System Settings.",
         );
     }
     let message = if error.contains("DeviceNotFound") {
@@ -2404,7 +2404,7 @@ impl CameraWindow {
                                 .flex()
                                 .justify_center()
                                 .text_size(px(7. * scale))
-                                .font_weight(gpui::FontWeight::BOLD)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(theme.gray_12)
                                 .child(label),
                         )

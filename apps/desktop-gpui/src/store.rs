@@ -146,6 +146,10 @@ pub struct ExportPrefs {
     pub advanced_open: bool,
     #[serde(default)]
     pub organization_id: Option<String>,
+    #[serde(default)]
+    pub drive_folder_id: Option<String>,
+    #[serde(default)]
+    pub drive_folder_path: Option<String>,
 }
 
 /// `so.cap.desktop`'s app-data dir -- where both stores live.
@@ -803,7 +807,7 @@ settings_enum! {
     /// `PostStudioRecordingBehaviour`.
     PostStudioBehaviour {
         OpenEditor = "openEditor", "Open editor";
-        ShowOverlay = "showOverlay", "Show Cap";
+        ShowOverlay = "showOverlay", "Show Kiekes";
         DoNothing = "doNothing", "Do nothing";
     }
     default = OpenEditor
@@ -882,7 +886,7 @@ impl WindowExclusion {
         let exclusion = Self {
             bundle_identifier: opt_string_at(map, "bundleIdentifier"),
             owner_name: opt_string_at(map, "ownerName"),
-            window_title: opt_string_at(map, "windowTitle"),
+            window_title: opt_string_at(map, "windowTitle").map(renamed_own_window_title),
         };
         (exclusion != Self::default()).then_some(exclusion)
     }
@@ -960,16 +964,30 @@ impl WindowExclusion {
 /// `DEFAULT_EXCLUDED_WINDOW_TITLES` in `general_settings.rs`, which is what
 /// the page's Reset button asks the backend for.
 pub const DEFAULT_EXCLUDED_WINDOW_TITLES: &[&str] = &[
-    "Cap",
-    "Cap Settings",
-    "Cap Recording Controls",
-    "Cap Camera",
-    "Cap Window Capture Occluder",
-    "Cap Capture Area",
-    "Cap Mode Selection",
-    "Cap Recordings Overlay",
-    "Cap Teleprompter",
+    "Kiekes",
+    "Kiekes Settings",
+    "Kiekes Recording Controls",
+    "Kiekes Camera",
+    "Kiekes Window Capture Occluder",
+    "Kiekes Capture Area",
+    "Kiekes Mode Selection",
+    "Kiekes Recordings Overlay",
+    "Kiekes Teleprompter",
 ];
+
+/// Saved exclusions from before the Kiekes rename still name our own windows
+/// "Cap ..."; mapping them keeps those windows out of recordings.
+fn renamed_own_window_title(title: String) -> String {
+    let renamed = match title.strip_prefix("Cap") {
+        Some(rest) if rest.is_empty() || rest.starts_with(' ') => format!("Kiekes{rest}"),
+        _ => return title,
+    };
+    if DEFAULT_EXCLUDED_WINDOW_TITLES.contains(&renamed.as_str()) {
+        renamed
+    } else {
+        title
+    }
+}
 
 pub fn default_excluded_windows() -> Vec<WindowExclusion> {
     DEFAULT_EXCLUDED_WINDOW_TITLES
@@ -1239,7 +1257,7 @@ pub fn recording_system_audio() -> bool {
     store_section(RECORDING_SETTINGS)
         .get("systemAudio")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 pub fn set_recording_system_audio(enabled: bool) -> bool {
@@ -1527,7 +1545,7 @@ pub fn hotkey_from_value(value: &Value) -> Option<Hotkey> {
 
 /// `DEFAULT_TRANSCRIPTION_HINTS` (`apps/desktop/src/utils/general-settings.ts`).
 pub const DEFAULT_TRANSCRIPTION_HINTS: &[&str] =
-    &["Cap", "TypeScript", "My Brand Name", "mywebsite.com"];
+    &["Kiekes", "TypeScript", "My Brand Name", "mywebsite.com"];
 
 /// `normalizeTranscriptionHints`: strip NULs, trim, drop empties and
 /// duplicates, first occurrence wins.
@@ -1890,7 +1908,7 @@ fn default_post() -> String {
 }
 
 fn default_notify_title() -> String {
-    "Cap Automation".to_string()
+    "Kiekes Automation".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2560,7 +2578,7 @@ mod tests {
             "recording-inputs-system-audio-malformed",
             Some(r#"{"recording_settings":{"systemAudio":"yes"}}"#),
         );
-        assert!(!recording_system_audio());
+        assert!(recording_system_audio());
     }
 
     #[test]
@@ -2802,7 +2820,7 @@ mod tests {
     "defaultZoomAmount": 2.5,
     "maxFps": 120,
     "serverUrl": "https://cap.example.com",
-    "excludedWindows": [{ "bundleIdentifier": null, "ownerName": null, "windowTitle": "Cap" }]
+    "excludedWindows": [{ "bundleIdentifier": null, "ownerName": null, "windowTitle": "Kiekes" }]
   }
 }"#,
             ),
@@ -2822,7 +2840,7 @@ mod tests {
         assert_eq!(settings.max_fps, 120);
         assert_eq!(settings.server_url, "https://cap.example.com");
         assert_eq!(settings.excluded_windows.len(), 1);
-        assert_eq!(settings.excluded_windows[0].primary_label(), "Cap");
+        assert_eq!(settings.excluded_windows[0].primary_label(), "Kiekes");
         // Absent keys take the page's defaults, not the struct's zero values.
         assert!(settings.enable_notifications);
         assert!(settings.crash_recovery_recording);
@@ -2931,8 +2949,8 @@ mod tests {
     #[test]
     fn transcription_hints_normalize_like_the_web_app() {
         assert_eq!(
-            normalize_transcription_hints(["  Cap ", "Cap", "", "\0", "Type\0Script", "cap"]),
-            ["Cap", "TypeScript", "cap"]
+            normalize_transcription_hints(["  Kiekes ", "Kiekes", "", "\0", "Type\0Script", "cap"]),
+            ["Kiekes", "TypeScript", "cap"]
         );
 
         let _store = TempStore::new(
@@ -3104,10 +3122,10 @@ mod tests {
     #[test]
     fn exclusion_matches_by_each_field_and_owner_title_requires_both() {
         let title = WindowExclusion {
-            window_title: Some("Cap Camera".into()),
+            window_title: Some("Kiekes Camera".into()),
             ..Default::default()
         };
-        assert!(title.matches(None, None, Some("Cap Camera")));
+        assert!(title.matches(None, None, Some("Kiekes Camera")));
         assert!(!title.matches(None, None, Some("Other Window")));
         assert!(!title.matches(None, None, None));
 
@@ -3119,21 +3137,21 @@ mod tests {
         assert!(!bundle.matches(Some("com.other.app"), None, None));
 
         let owner = WindowExclusion {
-            owner_name: Some("Cap".into()),
+            owner_name: Some("Kiekes".into()),
             ..Default::default()
         };
-        assert!(owner.matches(None, Some("Cap"), None));
+        assert!(owner.matches(None, Some("Kiekes"), None));
         assert!(!owner.matches(None, Some("Other"), None));
 
         let owner_and_title = WindowExclusion {
-            owner_name: Some("Cap".into()),
-            window_title: Some("Cap Camera".into()),
+            owner_name: Some("Kiekes".into()),
+            window_title: Some("Kiekes Camera".into()),
             ..Default::default()
         };
-        assert!(owner_and_title.matches(None, Some("Cap"), Some("Cap Camera")));
-        assert!(!owner_and_title.matches(None, Some("Cap"), Some("Wrong Title")));
-        assert!(!owner_and_title.matches(None, Some("Wrong Owner"), Some("Cap Camera")));
-        assert!(!owner_and_title.matches(None, None, Some("Cap Camera")));
+        assert!(owner_and_title.matches(None, Some("Kiekes"), Some("Kiekes Camera")));
+        assert!(!owner_and_title.matches(None, Some("Kiekes"), Some("Wrong Title")));
+        assert!(!owner_and_title.matches(None, Some("Wrong Owner"), Some("Kiekes Camera")));
+        assert!(!owner_and_title.matches(None, None, Some("Kiekes Camera")));
 
         let empty = WindowExclusion::default();
         assert!(!empty.matches(None, None, None));
@@ -3141,10 +3159,22 @@ mod tests {
 
         let bundle_first = WindowExclusion {
             bundle_identifier: Some("com.cap.desktop".into()),
-            window_title: Some("Cap Camera".into()),
+            window_title: Some("Kiekes Camera".into()),
             ..Default::default()
         };
         assert!(bundle_first.matches(Some("com.cap.desktop"), None, Some("Wrong")));
+    }
+
+    #[test]
+    fn saved_cap_window_titles_follow_the_kiekes_rename() {
+        assert_eq!(
+            renamed_own_window_title("Cap Camera".into()),
+            "Kiekes Camera"
+        );
+        assert_eq!(renamed_own_window_title("Cap".into()), "Kiekes");
+        assert_eq!(renamed_own_window_title("Capture".into()), "Capture");
+        assert_eq!(renamed_own_window_title("Cap Notes".into()), "Cap Notes");
+        assert_eq!(renamed_own_window_title("Slack".into()), "Slack");
     }
 
     /// Key absent -> the default exclusion list (the Rust struct's serde
@@ -3157,7 +3187,7 @@ mod tests {
             absent
                 .excluded_windows
                 .iter()
-                .any(|e| e.window_title.as_deref() == Some("Cap Camera"))
+                .any(|e| e.window_title.as_deref() == Some("Kiekes Camera"))
         );
 
         let mut general = Map::new();

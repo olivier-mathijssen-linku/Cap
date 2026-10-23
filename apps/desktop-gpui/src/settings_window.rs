@@ -175,6 +175,16 @@ impl Page {
     pub fn from_slug(slug: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|page| page.slug() == slug)
     }
+
+    /// Pages for Cap's own services (its CLI, plans and licences, feedback to
+    /// the Cap team and Cap's changelog) have no meaning in Kiekes.
+    pub fn visible(self) -> bool {
+        !(crate::direct_drive::enabled()
+            && matches!(
+                self,
+                Self::Cli | Self::License | Self::Feedback | Self::Changelog
+            ))
+    }
 }
 
 /// A popup list standing in for the native `Menu.popup()` the selects use.
@@ -1053,7 +1063,7 @@ impl SettingsWindow {
     fn delete_recording(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
             let confirmed = crate::platform::confirm_dialog(
-                "Cap",
+                "Kiekes",
                 "Are you sure you want to delete this recording?",
                 "Yes",
                 "No",
@@ -1179,7 +1189,7 @@ impl SettingsWindow {
     fn delete_screenshot(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
             let confirmed = crate::platform::confirm_dialog(
-                "Cap",
+                "Kiekes",
                 "Are you sure you want to delete this screenshot?",
                 "Yes",
                 "No",
@@ -1680,9 +1690,13 @@ impl SettingsWindow {
                         window.start_window_move();
                     }),
             )
-            .child(self.render_profile(cx))
+            .when(!crate::direct_drive::enabled(), |this| {
+                this.child(self.render_profile(cx))
+            })
             .child(self.render_nav(cx))
-            .child(self.render_account(cx))
+            .when(!crate::direct_drive::enabled(), |this| {
+                this.child(self.render_account(cx))
+            })
     }
 
     fn render_profile(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1784,48 +1798,54 @@ impl SettingsWindow {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .children(Page::ALL.iter().copied().map(|page| {
-                let selected = page == self.page;
-                div()
-                    .id(SharedString::from(page.slug()))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    // `.cap-settings-nav-item { height: 32px; padding: 6px;
-                    //  border-radius: 8px }`, `gap-1.5 text-[13px]`.
-                    .h(px(30.))
-                    .px(px(6.))
-                    .gap(px(8.))
-                    .rounded(px(8.))
-                    .text_size(px(13.))
-                    .when(selected, |this| {
-                        this.bg(Theme::with_alpha(
-                            rgb(Theme::SETTINGS_ACCENT),
-                            if theme.is_dark() { 0.22 } else { 0.12 },
-                        ))
-                        .font_weight(FontWeight::MEDIUM)
-                    })
-                    .when(!selected, |this| {
-                        this.hover(|style| style.bg(theme.settings_hover()))
-                    })
-                    .child(
-                        svg()
-                            .path(page.icon())
-                            .size(px(16.))
-                            .flex_shrink_0()
-                            .text_color(if selected {
-                                rgb(Theme::SETTINGS_ACCENT).into()
-                            } else {
-                                theme.settings_muted()
-                            }),
-                    )
-                    .child(page.label())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        // Navigating *is* a remount in the Solid router, so the
-                        // new page's query runs -- `set_page` carries that.
-                        this.set_page(page, window, cx);
-                    }))
-            }))
+            .children(
+                Page::ALL
+                    .iter()
+                    .copied()
+                    .filter(|page| page.visible())
+                    .map(|page| {
+                        let selected = page == self.page;
+                        div()
+                            .id(SharedString::from(page.slug()))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            // `.cap-settings-nav-item { height: 32px; padding: 6px;
+                            //  border-radius: 8px }`, `gap-1.5 text-[13px]`.
+                            .h(px(30.))
+                            .px(px(6.))
+                            .gap(px(8.))
+                            .rounded(px(8.))
+                            .text_size(px(13.))
+                            .when(selected, |this| {
+                                this.bg(Theme::with_alpha(
+                                    rgb(Theme::SETTINGS_ACCENT),
+                                    if theme.is_dark() { 0.22 } else { 0.12 },
+                                ))
+                                .font_weight(FontWeight::MEDIUM)
+                            })
+                            .when(!selected, |this| {
+                                this.hover(|style| style.bg(theme.settings_hover()))
+                            })
+                            .child(
+                                svg()
+                                    .path(page.icon())
+                                    .size(px(16.))
+                                    .flex_shrink_0()
+                                    .text_color(if selected {
+                                        rgb(Theme::SETTINGS_ACCENT).into()
+                                    } else {
+                                        theme.settings_muted()
+                                    }),
+                            )
+                            .child(page.label())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                // Navigating *is* a remount in the Solid router, so the
+                                // new page's query runs -- `set_page` carries that.
+                                this.set_page(page, window, cx);
+                            }))
+                    }),
+            )
     }
 
     fn render_account(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2116,6 +2136,7 @@ impl SettingsWindow {
                     .pb(px(28.))
                     .gap(px(28.))
                     .children(match self.page {
+                        page if !page.visible() => self.render_general(window, cx),
                         Page::General => self.render_general(window, cx),
                         Page::Quality => self.render_recording_quality(cx),
                         Page::Recordings => self.render_recordings(cx),
@@ -2950,17 +2971,22 @@ impl SettingsWindow {
     // -- The General page --------------------------------------------------
 
     fn render_general(&self, window: &Window, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        vec![
+        let mut sections = vec![
             self.render_appearance(cx).into_any_element(),
             self.render_app_section(cx).into_any_element(),
             self.render_recording(cx).into_any_element(),
             self.render_storage(cx).into_any_element(),
             self.render_project_name(window, cx).into_any_element(),
             self.render_excluded_windows(cx).into_any_element(),
-            self.render_updates(cx).into_any_element(),
-            self.render_self_host(window, cx).into_any_element(),
-            self.render_privacy(cx).into_any_element(),
-        ]
+        ];
+        // Update channels, the server URL and the telemetry switch belong to
+        // Cap's own services; this build sends no telemetry at all.
+        if !crate::direct_drive::enabled() {
+            sections.push(self.render_updates(cx).into_any_element());
+            sections.push(self.render_self_host(window, cx).into_any_element());
+            sections.push(self.render_privacy(cx).into_any_element());
+        }
+        sections
     }
 
     /// `AppearanceSection` -- `theme`.
@@ -3031,7 +3057,7 @@ impl SettingsWindow {
 
         self.section(
             "Appearance",
-            Some("Match Cap to your system theme or pick a fixed look."),
+            Some("Match Kiekes to your system theme or pick a fixed look."),
             None,
             vec![self.card(true).child(tiles).into_any_element()],
         )
@@ -3041,13 +3067,13 @@ impl SettingsWindow {
     fn render_app_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         self.section(
             "App",
-            Some("Choose how Cap shows up on your system."),
+            Some("Choose how Kiekes shows up on your system."),
             None,
             vec![
                 self.rows(vec![
                     self.setting_row(
                         "Always show dock icon",
-                        Some("Keep Cap in the dock even when no windows are open."),
+                        Some("Keep Kiekes in the dock even when no windows are open."),
                         // The row is the *inverse* of the stored key.
                         self.toggle(
                             "hide-dock-icon",
@@ -3482,7 +3508,7 @@ impl SettingsWindow {
                     ),
                     self.setting_row(
                         "Delete Instant recordings after upload",
-                        Some("Cap removes the local file once it has uploaded successfully."),
+                        Some("Kiekes removes the local file once it has uploaded successfully."),
                         self.toggle(
                             "delete-after-upload",
                             settings.delete_instant_recordings_after_upload,
@@ -3679,7 +3705,7 @@ impl SettingsWindow {
 
         self.section(
             "Storage",
-            Some("Where Cap saves your recordings."),
+            Some("Where Kiekes saves your recordings."),
             None,
             vec![
                 self.card(true)
@@ -4778,21 +4804,21 @@ mod tests {
     #[test]
     fn default_exclusions_are_covered_by_title() {
         let default = WindowExclusion {
-            window_title: Some("Cap Camera".into()),
+            window_title: Some("Kiekes Camera".into()),
             ..Default::default()
         };
         assert!(covers_default_exclusion(&default, &default));
         assert!(covers_default_exclusion(
             &WindowExclusion {
-                owner_name: Some("Cap".into()),
-                window_title: Some("Cap Camera".into()),
+                owner_name: Some("Kiekes".into()),
+                window_title: Some("Kiekes Camera".into()),
                 ..Default::default()
             },
             &default
         ));
         assert!(!covers_default_exclusion(
             &WindowExclusion {
-                window_title: Some("Cap Settings".into()),
+                window_title: Some("Kiekes Settings".into()),
                 ..Default::default()
             },
             &default

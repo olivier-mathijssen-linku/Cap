@@ -146,23 +146,23 @@ struct Copy {
 fn copy_for(permission: OSPermission) -> Copy {
     match permission {
         OSPermission::ScreenRecording => Copy {
-            title: "Let Cap see your screen",
-            body: "Screen Recording lets Cap capture your displays, windows and system audio.",
+            title: "Let Kiekes see your screen",
+            body: "Screen Recording lets Kiekes capture your displays, windows and system audio.",
             done_title: "Screen recording is on",
-            done_body: "Cap can capture your screen.",
+            done_body: "Kiekes can capture your screen.",
             allow: "Allow screen recording",
             doodle: &art::SCREEN,
         },
         OSPermission::Accessibility => Copy {
-            title: "Let Cap follow your cursor",
-            body: "Accessibility lets Cap see your clicks and cursor, on this Mac only, so auto zoom knows where to look.",
+            title: "Let Kiekes follow your cursor",
+            body: "Accessibility lets Kiekes see your clicks and cursor, on this Mac only, so auto zoom knows where to look.",
             done_title: "Accessibility is on",
             done_body: "Auto zoom can follow your clicks.",
             allow: "Allow accessibility",
             doodle: &art::CURSOR,
         },
         OSPermission::Microphone => Copy {
-            title: "Let Cap hear you",
+            title: "Let Kiekes hear you",
             body: "Add your voice to your recordings. You can skip this and turn it on later.",
             done_title: "Microphone is on",
             done_body: "Your voice can be in your recordings.",
@@ -170,7 +170,7 @@ fn copy_for(permission: OSPermission) -> Copy {
             doodle: &art::MICROPHONE,
         },
         OSPermission::Camera => Copy {
-            title: "Let Cap see you",
+            title: "Let Kiekes see you",
             body: "Show yourself in a corner of your recordings. Skip it if you don't need it.",
             done_title: "Camera is on",
             done_body: "You can add your camera to any recording.",
@@ -329,12 +329,12 @@ impl OnboardingWindow {
     fn render_checklist(&self, paper: &Paper, cx: &mut Context<Self>) -> Div {
         let (title, lede) = if self.permissions_only {
             (
-                "Cap needs a permission back",
+                "Kiekes needs a permission back",
                 "Something was switched off in System Settings. Turn it back on to keep recording.",
             )
         } else {
             (
-                "Let's get Cap ready",
+                "Let's get Kiekes ready",
                 "macOS asks you to OK a few things first. It only takes a minute.",
             )
         };
@@ -501,12 +501,12 @@ impl OnboardingWindow {
                 .child(stage_title(paper, "One restart and you're set"))
                 .child(stage_body(
                     paper,
-                    "macOS turns on screen recording once Cap restarts. You'll pick up right here.",
+                    "macOS turns on screen recording once Kiekes restarts. You'll pick up right here.",
                 ))
                 .child(div().mt(px(24.)).child(paper_button(
                     paper,
                     "perm-relaunch-done",
-                    "Relaunch Cap",
+                    "Relaunch Kiekes",
                     true,
                     true,
                     cx.listener(|_, _, _, cx| permissions::relaunch(cx)),
@@ -524,9 +524,9 @@ impl OnboardingWindow {
                 .child(stage_body(
                     paper,
                     if self.permissions_only {
-                        "Thanks. Cap can record again."
+                        "Thanks. Kiekes can record again."
                     } else {
-                        "Cap has everything it needs. Next, a quick look at what it can do."
+                        "Kiekes has everything it needs. Next, a quick look at what it can do."
                     },
                 )),
             Stage::Permission(permission) => {
@@ -548,7 +548,7 @@ impl OnboardingWindow {
                             copy.done_title
                         } else if self.stage.waiting_on == Some(permission) && permission.required()
                         {
-                            "Switch Cap on in System Settings"
+                            "Switch Kiekes on in System Settings"
                         } else {
                             copy.title
                         },
@@ -557,7 +557,7 @@ impl OnboardingWindow {
                     let done_body = if permission == OSPermission::ScreenRecording
                         && self.needs_relaunch()
                     {
-                        "macOS applies it after Cap restarts. You can do that once you're done here."
+                        "macOS applies it after Kiekes restarts. You can do that once you're done here."
                     } else {
                         copy.done_body
                     };
@@ -590,13 +590,13 @@ impl OnboardingWindow {
         let guided = crate::permission_guide::eligible(permission);
         let waiting_required = waiting && permission.required();
         let body = if waiting_required && guided {
-            "Drag Cap from the panel under System Settings into the list. Already listed? Just switch it on."
+            "Drag Kiekes from the panel under System Settings into the list. Already listed? Just switch it on."
         } else if waiting_required {
-            "Find Cap in the list and switch it on. If macOS asked first, choose Open System Settings."
+            "Find Kiekes in the list and switch it on. If macOS asked first, choose Open System Settings."
         } else if status == OSPermissionStatus::Denied && !permission.required() {
-            "It was turned off earlier, so switch Cap on in System Settings. Or skip it for now."
+            "It was turned off earlier, so switch Kiekes on in System Settings. Or skip it for now."
         } else if action == Some(RowAction::OpenSettings) && permission.required() {
-            "Open System Settings, find Cap in the list and switch it on."
+            "Open System Settings, find Kiekes in the list and switch it on."
         } else {
             copy.body
         };
@@ -658,7 +658,7 @@ impl OnboardingWindow {
                             .text_size(px(12.))
                             .font_weight(FontWeight::NORMAL)
                             .text_color(paper.soft)
-                            .child("No prompt showed up? Switch Cap on in System Settings."),
+                            .child("No prompt showed up? Switch Kiekes on in System Settings."),
                     )
                     .child(paper_button(
                         paper,
@@ -728,7 +728,7 @@ impl OnboardingWindow {
                             .line_height(px(17.))
                             .font_weight(FontWeight::NORMAL)
                             .text_color(paper.soft)
-                            .child("Switched on but still waiting? Restart Cap to apply it."),
+                            .child("Switched on but still waiting? Restart Kiekes to apply it."),
                     )
                     .child(paper_button(
                         paper,

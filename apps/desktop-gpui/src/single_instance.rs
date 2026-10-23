@@ -125,7 +125,7 @@ fn is_cap_gpui_image(path: &Path) -> bool {
     #[cfg(windows)]
     const IMAGE_NAMES: [&str; 2] = ["Cap.exe", "cap-gpui.exe"];
     #[cfg(not(windows))]
-    const IMAGE_NAMES: [&str; 2] = ["Cap", "cap-gpui"];
+    const IMAGE_NAMES: [&str; 4] = ["Cap", "cap-gpui", "Kiekes", "CapDrive"];
 
     let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return false;

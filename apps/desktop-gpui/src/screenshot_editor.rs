@@ -2345,7 +2345,7 @@ impl ScreenshotEditorWindow {
         let bundle = self.bundle.clone();
         cx.spawn_in(window, async move |_this, cx| {
             if !crate::platform::confirm_dialog(
-                "Cap",
+                "Kiekes",
                 "Are you sure you want to delete this screenshot?",
                 "Yes",
                 "No",
@@ -4599,20 +4599,13 @@ fn mini_checker() -> Vec<AnyElement> {
     .collect()
 }
 
-/// The skeleton's `<div class="animate-spin"><IconCapLogo /></div>`. The app
-/// has no bare logo glyph -- only the full lockup -- so the wordmark would spin
-/// with it; the lockup is drawn still instead, at the skeleton's opacity
-/// (README deviation).
+/// The skeleton's `<div class="animate-spin"><IconCapLogo /></div>`, with the
+/// Kiekes mark in place of Cap's logo, drawn still at the skeleton's opacity.
 fn spinning_logo(theme: &Theme) -> impl IntoElement {
     div().flex().items_center().justify_center().child(
         svg()
-            .path(if theme.is_dark() {
-                "icons/logo-full-dark.svg"
-            } else {
-                "icons/logo-full.svg"
-            })
-            .w(px(103.))
-            .h(px(40.))
+            .path("icons/kiekes-mark.svg")
+            .size(px(40.))
             .opacity(0.5)
             .text_color(theme.gray_8),
     )

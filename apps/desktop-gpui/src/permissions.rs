@@ -281,7 +281,7 @@ async fn media_permission_result(
         MediaAuthorization::NotDetermined
         | MediaAuthorization::Denied
         | MediaAuthorization::Restricted => Err(format!(
-            "{} access is unavailable. Allow Cap in System Settings > Privacy & Security > {}, then select the device again.",
+            "{} access is unavailable. Allow Kiekes in System Settings > Privacy & Security > {}, then select the device again.",
             permission.label(),
             permission.label()
         )),

@@ -31,7 +31,7 @@ impl LinuxFileDialogError {
         match self {
             Self::Busy => "A file dialog is already open. Finish or cancel it before trying again.".into(),
             Self::BeforeDispatch(error) | Self::NativeResponse(error) => format!("The file dialog could not complete: {error}"),
-            Self::Indeterminate(_) | Self::RestartRequired => "Cap could not confirm that the file dialog closed. Close any remaining file dialog and restart Cap before trying again.".into(),
+            Self::Indeterminate(_) | Self::RestartRequired => "Kiekes could not confirm that the file dialog closed. Close any remaining file dialog and restart Kiekes before trying again.".into(),
         }
     }
 }
@@ -1669,24 +1669,31 @@ mod mac {
     /// so the classic `icon.png` renders with its own pre-26 rounded-rect
     /// shape and looks visibly different next to the original. NSWorkspace's
     /// `iconForFile:` hands back the icon *as the system presents it*,
-    /// treatment included, so the installed Cap.app's is used when it exists
-    /// and the raw asset only as a fallback. A future .app bundle with its
-    /// own (Icon Composer) icon supersedes all of this.
+    /// treatment included, so a bundled build asks for its own bundle's icon
+    /// and only an unbundled dev binary falls back to the raw asset. (This
+    /// used to borrow `/Applications/Cap.app`'s icon, which made the Kiekes
+    /// dock tile show Cap's logo whenever Cap was installed.)
     pub fn set_dock_icon(fallback_png: &[u8]) {
         use objc2::{class, msg_send};
         use objc2_foundation::NSString;
         unsafe {
             let mut image: Option<Id<AnyObject>> = None;
 
-            let cap_app = NSString::from_str("/Applications/Cap.app");
-            let exists: bool = {
-                let manager: *mut AnyObject = msg_send![class!(NSFileManager), defaultManager];
-                !manager.is_null() && msg_send![manager, fileExistsAtPath: &*cap_app]
+            let bundle: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
+            let bundle_path: *mut AnyObject = if bundle.is_null() {
+                std::ptr::null_mut()
+            } else {
+                msg_send![bundle, bundlePath]
+            };
+            let exists = !bundle_path.is_null() && {
+                let suffix = NSString::from_str(".app");
+                let is_app: bool = msg_send![bundle_path, hasSuffix: &*suffix];
+                is_app
             };
             if exists {
                 let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
                 if !workspace.is_null() {
-                    let raw: *mut AnyObject = msg_send![workspace, iconForFile: &*cap_app];
+                    let raw: *mut AnyObject = msg_send![workspace, iconForFile: bundle_path];
                     // `iconForFile:` is autoreleased; retain for the setter.
                     image = Id::retain(raw);
                     if let Some(image) = &image {
@@ -1718,7 +1725,7 @@ mod mac {
             if !app.is_null() {
                 let _: () = msg_send![app, setApplicationIconImage: &*image];
             }
-            tracing::info!(from_installed_app = exists, "dock icon set");
+            tracing::info!(from_own_bundle = exists, "dock icon set");
         }
     }
 
@@ -3039,7 +3046,7 @@ mod file_dialog_tests {
         assert!(
             LinuxFileDialogError::RestartRequired
                 .message()
-                .contains("restart Cap")
+                .contains("restart Kiekes")
         );
     }
 

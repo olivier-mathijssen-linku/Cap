@@ -1428,7 +1428,7 @@ impl OverlayWindow {
                             // (`target-select-overlay.tsx:426`). `font-semibold`
                             // renders 700: no 600 face is loaded over there
                             // (`ui-solid/vite.js:31-33` ships 400/500/700 only).
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child(SharedString::from(self.display_name.clone())),
                     )
                     .children(
@@ -1507,7 +1507,7 @@ impl OverlayWindow {
                                     // `text-3xl font-semibold`
                                     // (`target-select-overlay.tsx:681`):
                                     // renders 700, no 600 face loaded.
-                                    .font_weight(FontWeight::BOLD)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(active.app_name.clone())),
                             )
                             .child(
@@ -1584,7 +1584,7 @@ impl OverlayWindow {
                             // `text-3xl font-semibold`
                             // (`target-select-overlay.tsx:392`): renders 700,
                             // no 600 face loaded.
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child("Camera Only"),
                     )
                     .child(

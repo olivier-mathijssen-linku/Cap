@@ -1787,7 +1787,7 @@ fn persist_instant_meta(
             .file_stem()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
-            .unwrap_or("Cap Recording")
+            .unwrap_or("Kiekes Recording")
             .to_string();
         let meta = match &completed.meta {
             InstantRecordingMeta::InProgress { .. } => InstantRecordingMeta::Failed {
@@ -1926,7 +1926,7 @@ fn persist_in_progress_instant_meta(
             .file_stem()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
-            .unwrap_or("Cap Recording")
+            .unwrap_or("Kiekes Recording")
             .to_string();
 
         let meta = cap_project::RecordingMeta {
@@ -2015,7 +2015,7 @@ async fn start_internal(
     let project_name = project_dir
         .file_stem()
         .and_then(|name| name.to_str())
-        .unwrap_or("Cap Recording")
+        .unwrap_or("Kiekes Recording")
         .to_string();
     let organization_id = crate::store::store_section(crate::store::RECORDING_SETTINGS)
         .get("organizationId")
@@ -2236,7 +2236,7 @@ async fn start_attempt_with_upload(
         if config.mode == RecordingMode::Instant {
             // `filter_for_instant_mode`: instant has no compositing step,
             // so the camera bubble stays in the picture there.
-            rules.retain(|rule| rule.window_title.as_deref() != Some("Cap Camera"));
+            rules.retain(|rule| rule.window_title.as_deref() != Some("Kiekes Camera"));
         }
         for id in resolve_excluded_window_ids(&rules) {
             if !excluded.contains(&id) {

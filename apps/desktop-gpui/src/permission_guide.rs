@@ -391,7 +391,7 @@ impl Render for PermissionGuide {
                                     .line_height(px(19.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(paper.ink)
-                                    .child("Drag Cap into the list"),
+                                    .child("Drag Kiekes into the list"),
                             )
                             .child(
                                 div()

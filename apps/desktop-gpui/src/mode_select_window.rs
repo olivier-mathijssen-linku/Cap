@@ -211,7 +211,7 @@ impl ModeSelectWindow {
                         div()
                             .mb(px(6.))
                             .text_size(px(16.))
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(if selected {
                                 Hsla::from(theme.blue_11)
                             } else {
@@ -277,7 +277,7 @@ impl Render for ModeSelectWindow {
                                 div()
                                     .mb(px(4.))
                                     .text_size(px(20.))
-                                    .font_weight(FontWeight::BOLD)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(Hsla::from(theme.gray_12))
                                     .child("Choose Recording Mode"),
                             )

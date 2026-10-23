@@ -192,8 +192,8 @@ pub(crate) fn check_manually(cx: &mut App) {
             cx.spawn(async move |_| {
                 crate::platform::activate_app();
                 crate::platform::alert_dialog(
-                    "Update Cap",
-                    &format!("Cap is already getting version {version} ready."),
+                    "Update Kiekes",
+                    &format!("Kiekes is already getting version {version} ready."),
                 );
             })
             .detach();
@@ -262,7 +262,7 @@ fn finish_manual_check(cx: &mut App, manual: bool) {
 fn busy_alert(cx: &mut App) {
     cx.spawn(async move |_| {
         crate::platform::activate_app();
-        crate::platform::alert_dialog("Cap is busy", BUSY_MESSAGE);
+        crate::platform::alert_dialog("Kiekes is busy", BUSY_MESSAGE);
     })
     .detach();
 }
@@ -381,7 +381,7 @@ pub(crate) fn schedule_startup_check(cx: &mut App) {
                     if manual {
                         crate::platform::activate_app();
                         crate::platform::alert_dialog(
-                            "Update Cap",
+                            "Update Kiekes",
                             &format!("Couldn't check for updates: {error}"),
                         );
                         cx.update(|cx| finish_manual_check(cx, true));
@@ -420,9 +420,9 @@ pub(crate) fn schedule_startup_check(cx: &mut App) {
 
             crate::platform::activate_app();
             let accepted = crate::platform::confirm_dialog(
-                "Update Cap",
+                "Update Kiekes",
                 &format!(
-                    "Version {} of Cap is available. Cap will download it in the background and let you know when it's ready to install.",
+                    "Version {} of Kiekes is available. Kiekes will download it in the background and let you know when it's ready to install.",
                     release.version
                 ),
                 "Download",
@@ -532,7 +532,7 @@ fn update_failed(message: &str, cx: &mut App) {
         format!("{message}\n\nYou can always download the latest version from cap.so/download.");
     cx.spawn(async move |_| {
         crate::platform::activate_app();
-        crate::platform::alert_dialog("Update Cap", &message);
+        crate::platform::alert_dialog("Update Kiekes", &message);
     })
     .detach();
 }
@@ -555,8 +555,8 @@ fn prompt_restart(cx: &mut App) {
     cx.spawn(async move |cx| {
         crate::platform::activate_app();
         if crate::platform::confirm_dialog(
-            "Update Cap",
-            &format!("Cap {version} is ready. Restart Cap to finish updating."),
+            "Update Kiekes",
+            &format!("Kiekes {version} is ready. Restart Kiekes to finish updating."),
             "Restart Now",
             "Later",
             false,
@@ -587,7 +587,7 @@ pub(crate) fn install_and_relaunch(cx: &mut App) {
     }
     if let Err(error) = crate::app_windows::flush_pending_editor_saves(cx) {
         cx.spawn(async move |_| {
-            crate::platform::alert_dialog("Cap is still open", &error);
+            crate::platform::alert_dialog("Kiekes is still open", &error);
         })
         .detach();
         return;
@@ -688,7 +688,7 @@ fn apply_package(
     let bundle = executable
         .ancestors()
         .find(|path| path.extension().is_some_and(|extension| extension == "app"))
-        .ok_or_else(|| "This copy of Cap isn't running from an app bundle".to_string())?;
+        .ok_or_else(|| "This copy of Kiekes isn't running from an app bundle".to_string())?;
     installer::install_app_bundle(package, bundle)?;
     Ok(Some(executable))
 }
@@ -715,7 +715,7 @@ fn apply_package(package: &std::path::Path, kind: ArtifactKind) -> Result<Option
             let image = std::env::var_os("APPIMAGE")
                 .map(PathBuf::from)
                 .filter(|path| path.is_absolute())
-                .ok_or_else(|| "This copy of Cap isn't running from an AppImage".to_string())?;
+                .ok_or_else(|| "This copy of Kiekes isn't running from an AppImage".to_string())?;
             installer::install_appimage(package, &image)?;
             Ok(Some(image))
         }

@@ -506,7 +506,7 @@ impl Render for ControlsWindow {
         let issue = session.error.clone().or_else(|| {
             session
                 .storage_warning
-                .then(|| "Low storage. Cap will stop soon to save your recording.".to_owned())
+                .then(|| "Low storage. Kiekes will stop soon to save your recording.".to_owned())
         });
 
         div()

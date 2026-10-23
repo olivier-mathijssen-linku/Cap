@@ -280,7 +280,7 @@ mod target_list_tests {
         WindowOption {
             id: WindowId::from_str(id).unwrap(),
             label: label.into(),
-            app: "Cap".into(),
+            app: "Kiekes".into(),
             size: Some((1920, 1080)),
             position: Some((0., 0.)),
             refresh_rate: Some(60.),

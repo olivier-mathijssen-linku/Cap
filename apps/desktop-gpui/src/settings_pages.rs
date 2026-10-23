@@ -500,6 +500,9 @@ impl SettingsWindow {
     /// Per-page fetch/reset on navigation -- what each route's mount effects
     /// do. Called from [`SettingsWindow::page_shown`].
     pub(crate) fn pages_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.page.visible() {
+            return;
+        }
         match self.page {
             Page::Shortcuts => {
                 self.pages.hotkeys = store::hotkeys_raw();
@@ -1004,7 +1007,7 @@ const STUDIO_OUTCOMES: [(store::PostStudioBehaviour, OutcomeOption); 3] = [
         store::PostStudioBehaviour::ShowOverlay,
         OutcomeOption {
             icon: "icons/app-window.svg",
-            label: "Show Cap",
+            label: "Show Kiekes",
             hint: "Back to the recorder",
         },
     ),
@@ -1105,7 +1108,7 @@ fn shortcut_effect(
         "openRecordingPickerArea" => format!("select an area, then {}", picker_outcome(mode)),
         "openRecordingPickerWindow" => format!("choose a window, then {}", picker_outcome(mode)),
         "openRecordingPickerDisplay" => format!("choose a display, then {}", picker_outcome(mode)),
-        "openRecordingPicker" => "open Cap so you can choose what to record".into(),
+        "openRecordingPicker" => "open Kiekes so you can choose what to record".into(),
         "cycleRecordingMode" => "switch between Studio, Instant and Screenshot mode".into(),
         "stopRecording" => "stop the current recording".into(),
         "togglePauseRecording" => "pause the current recording, or resume it".into(),
@@ -1474,7 +1477,7 @@ impl SettingsWindow {
             self.render_outcome_panel(
                 "outcome-screenshot",
                 "After a screenshot",
-                "For every screenshot, from a shortcut or from Cap",
+                "For every screenshot, from a shortcut or from Kiekes",
                 &SCREENSHOT_OUTCOMES
                     .iter()
                     .map(|(value, option)| {
@@ -1561,7 +1564,7 @@ impl SettingsWindow {
             .into_any_element(),
             self.section(
                 "Recording",
-                Some("Start a recording without opening Cap first."),
+                Some("Start a recording without opening Kiekes first."),
                 None,
                 vec![card("shortcuts-recording", recording, cx)],
             )
@@ -2633,7 +2636,7 @@ impl SettingsWindow {
             )
             .into_any_element(),
         ];
-        if dev_supervisor_available() {
+        if dev_supervisor_available() && !crate::direct_drive::enabled() {
             sections.push(
                 self.section(
                     "Developer",
@@ -2854,7 +2857,7 @@ impl SettingsWindow {
 
         if !store::set_store_setting(GENERAL_SETTINGS, "enableGpuiApp", Value::Bool(false)) {
             self.pages.switch_back = Some(SwitchBack::Failed(
-                "Couldn't save your app preference. Cap is still open.".to_string(),
+                "Couldn't save your app preference. Kiekes is still open.".to_string(),
             ));
             cx.notify();
             return;
@@ -3982,7 +3985,7 @@ impl SettingsWindow {
                                                 .rounded(px(6.))
                                                 .bg(Hsla::from(theme.blue_9))
                                                 .text_size(px(12.))
-                                                .font_weight(FontWeight::BOLD)
+                                                .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(gpui::white())
                                                 .child("NEW"),
                                         ),
@@ -3991,7 +3994,7 @@ impl SettingsWindow {
                                 .child(
                                     div()
                                         .text_size(px(14.))
-                                        .font_weight(FontWeight::BOLD)
+                                        .font_weight(FontWeight::SEMIBOLD)
                                         .mb(px(8.))
                                         .child(entry.title.clone()),
                                 )
@@ -4015,7 +4018,7 @@ impl SettingsWindow {
                                                 .line_height(px(20.))
                                                 .text_color(theme.settings_muted())
                                                 .when(paragraph.heading, |this| {
-                                                    this.font_weight(FontWeight::BOLD)
+                                                    this.font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(theme.settings_text())
                                                 })
                                                 .child(paragraph.text)
@@ -5147,7 +5150,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .text_size(px(14.))
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             )
     }
@@ -5249,7 +5252,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .text_size(px(14.))
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child("Configuration"),
             )
             .child(
@@ -5351,10 +5354,18 @@ impl SettingsWindow {
             let pending = self.pages.gdrive.connect_pending;
             let mut children = vec![self.section(
                 "Google Drive",
-                Some("Upload Studio recordings directly to a private Cap Recordings folder. Each upload creates a new video. Open its Drive link and use Share to give viewers access."),
+                Some("Upload Studio recordings to the Drive folder you choose in the editor's export panel, or to your folder in the team folder. Each upload creates a new video. Open its Drive link and use Share to give viewers access."),
                 None,
                 vec![div().flex().flex_col().gap(px(12.))
                     .child(if connected { "Connected to Google Drive" } else { "Connect your Google account to upload recordings" })
+                    .when(connected && !cap_direct_drive::can_browse_folders(), |this| {
+                        this.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(Hsla::from(self.theme.amber_11))
+                                .child("This connection was made before folder choice existed. Disconnect and connect again to choose Drive folders and use the team folder."),
+                        )
+                    })
                     .child(self.button("direct-drive-connect", (ui::ButtonVariant::Primary, None),
                         if pending { "Waiting for Google sign-in..." } else if connected { "Disconnect Google Drive" } else { "Connect Google Drive" },
                         pending, cx, move |this, window, cx| {
@@ -6009,7 +6020,7 @@ fn default_action(kind: ActionType) -> Action {
         },
         ActionType::RecognizeTextToClipboard => Action::RecognizeTextToClipboard,
         ActionType::Notify => Action::Notify {
-            title_template: "Cap".to_string(),
+            title_template: "Kiekes".to_string(),
             body_template: String::new(),
         },
         ActionType::OpenEditor => Action::OpenEditor,
@@ -6217,7 +6228,7 @@ const TEMPLATES: [Template; 8] = [
     Template {
         id: "ocr-screenshot",
         name: "Pull the text out of screenshots",
-        description: "Cap reads the text in your screenshot and copies it for you.",
+        description: "Kiekes reads the text in your screenshot and copies it for you.",
         icon: "icons/scan-text.svg",
         build: || {
             template_rule(
@@ -6289,7 +6300,7 @@ const TEMPLATES: [Template; 8] = [
                 "Ping me when an upload is ready",
                 Trigger::UploadCompleted,
                 vec![Action::Notify {
-                    title_template: "Cap".to_string(),
+                    title_template: "Kiekes".to_string(),
                     body_template: "Your recording is ready to share.".to_string(),
                 }],
             )
