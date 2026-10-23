@@ -65,8 +65,11 @@ resume offsets, chunk contents, completion size verification, recovery after
 a lost final response, and cancellation. They use a local HTTP test server and
 do not contact Google or access the system credential store.
 
-A real Google authorization, a sample video upload, playback, and a viewer
-access check must still be verified with the configured Google project.
+Google authorization has been completed with the configured Desktop client.
+A generated three-second, silent test clip was imported into the packaged
+app, exported at 720p/30 fps, uploaded to Drive, and played from the returned
+standard Drive link. Drive showed the file as private to its owner. Access
+by an additional invited viewer has not been tested.
 
 Validation: all eight Drive library tests and its strict Clippy check pass.
 After installing full Xcode, accepting its license, and installing CMake, the
@@ -74,7 +77,9 @@ GPUI desktop binary builds successfully. A local macOS 27 Apple Silicon app
 bundle with the recording helper, video libraries, backgrounds, and audio assets
 has been signed locally, verified, and opened to the onboarding screen.
 The local prototype does not bundle Cap's CLI diagnostics sidecar. Screen
-Recording and Accessibility permissions, Google consent, and a real recording
-and upload still require verification before calling the workflow complete.
+Recording and Accessibility permissions have been granted and onboarding
+completed. A live screen-capture session has not yet been tested; the verified
+flow used an imported generated clip and did not capture screen or microphone
+content.
 
 The source retains Cap's AGPLv3 license and copyright notices.
