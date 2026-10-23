@@ -492,7 +492,7 @@ const TRANSPARENT: &str = "transparent";
 /// at the zoom in force.
 const HANDLE_SCREEN_SIZE: f64 = 10.;
 /// The selection blue -- `#3b82f6`, hardcoded in the source rather than themed.
-const SELECTION_BLUE: u32 = 0x3b82f6;
+const SELECTION_BLUE: u32 = 0x3b66c4;
 /// A creation smaller than this in both axes is discarded on mouse-up
 /// (`:498`), and a mask thinner than this on either axis is deleted by the
 /// clamp effect (`:118`).

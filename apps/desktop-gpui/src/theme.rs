@@ -13,14 +13,9 @@ use gpui::{
 use crate::platform::{self, ForcedAppearance, MaterialKind};
 use crate::store::AppTheme;
 
-/// The interface face: the platform's own UI font (SF Pro on macOS, Segoe UI
-/// on Windows) so text matches the system. Linux distros have no reliable
-/// equivalent, so they keep the bundled Geist.
-pub const UI_FONT: &str = if cfg!(any(target_os = "macos", target_os = "windows")) {
-    ".SystemUIFont"
-} else {
-    "Geist"
-};
+/// The interface face: Sen, the Linku typeface, bundled in `assets/fonts`
+/// (SIL Open Font License) so every platform renders the same letters.
+pub const UI_FONT: &str = "Sen";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Appearance {
@@ -364,6 +359,8 @@ pub struct Theme {
     pub gray_11: Rgba,
     pub gray_12: Rgba,
 
+    /// The blue steps are the Linku scale around `#3b66c4`, not Radix blue,
+    /// so every window shares the recorder's accent.
     pub blue_3: Rgba,
     pub blue_4: Rgba,
     pub blue_5: Rgba,
@@ -373,7 +370,7 @@ pub struct Theme {
     pub blue_10: Rgba,
     pub blue_11: Rgba,
     /// The screenshot editor's layers panel selected-row label
-    /// (`text-blue-12`). Stock Radix -- `theme.css` overrides no blue-12.
+    /// (`text-blue-12`).
     pub blue_12: Rgba,
 
     pub red_2: Rgba,
@@ -480,8 +477,8 @@ impl EditorPalette {
             ctl: rgba(0x0000000b),
             ctl_hover: rgba(0x00000013),
             ctl_active: rgba(0x0000001c),
-            accent: rgb(0x007aff),
-            accent_2: rgb(0x2b8cff),
+            accent: rgb(0x3b66c4),
+            accent_2: rgb(0x4f78d0),
             playhead: rgb(0xff3b30),
             thumb: rgb(0xffffff),
             seg_tint: 0.13,
@@ -509,8 +506,8 @@ impl EditorPalette {
             ctl: rgba(0xffffff0f),
             ctl_hover: rgba(0xffffff17),
             ctl_active: rgba(0xffffff21),
-            accent: rgb(0x0a84ff),
-            accent_2: rgb(0x3d9bff),
+            accent: rgb(0x3b66c4),
+            accent_2: rgb(0x4f78d0),
             playhead: rgb(0xff453a),
             thumb: rgb(0xe8e8ea),
             seg_tint: 0.20,
@@ -704,15 +701,15 @@ impl Theme {
             gray_11: rgb(0x646464),
             gray_12: rgb(0x202020),
 
-            blue_3: rgb(0xe6f4fe),
-            blue_4: rgb(0xd5efff),
-            blue_5: rgb(0xc2e5ff),
-            blue_6: rgb(0xacd8fc),
-            blue_8: rgb(0x5eb1ef),
-            blue_9: rgb(0x0090ff),
-            blue_10: rgb(0x0588f0),
-            blue_11: rgb(0x0d74ce),
-            blue_12: rgb(0x113264),
+            blue_3: rgb(0xedf1fa),
+            blue_4: rgb(0xe1e8f6),
+            blue_5: rgb(0xd2ddf2),
+            blue_6: rgb(0xbfcdec),
+            blue_8: rgb(0x8ea8e0),
+            blue_9: rgb(0x3b66c4),
+            blue_10: rgb(0x345cb3),
+            blue_11: rgb(0x2a4b94),
+            blue_12: rgb(0x1b315e),
 
             red_2: rgb(0xfff7f7),
             red_3: rgb(0xfeebec),
@@ -725,8 +722,8 @@ impl Theme {
             amber_6: rgb(0xf3d673),
             amber_11: rgb(0xab6400),
 
-            blue_100: rgb(0xadc9ff),
-            blue_500: rgb(0x3666c5),
+            blue_100: rgb(0xc9d6f2),
+            blue_500: rgb(0x3b66c4),
             red_300: rgb(0xff4766),
 
             // `theme.css:38-44`.
@@ -760,15 +757,15 @@ impl Theme {
             gray_11: rgb(0xa1a1a1),
             gray_12: rgb(0xeeeeee),
 
-            blue_3: rgb(0x0d2847),
-            blue_4: rgb(0x003362),
-            blue_5: rgb(0x004074),
-            blue_6: rgb(0x104d87),
-            blue_8: rgb(0x2870bd),
-            blue_9: rgb(0x0090ff),
-            blue_10: rgb(0x3b9eff),
-            blue_11: rgb(0x70b8ff),
-            blue_12: rgb(0xc2e6ff),
+            blue_3: rgb(0x141c2e),
+            blue_4: rgb(0x18233b),
+            blue_5: rgb(0x1d2b4a),
+            blue_6: rgb(0x24365c),
+            blue_8: rgb(0x3f5a94),
+            blue_9: rgb(0x3b66c4),
+            blue_10: rgb(0x4a74d0),
+            blue_11: rgb(0x8ea8e0),
+            blue_12: rgb(0xdde5f5),
 
             red_2: rgb(0x201314),
             red_3: rgb(0x3b1219),
@@ -781,8 +778,8 @@ impl Theme {
             amber_6: rgb(0x5c3d05),
             amber_11: rgb(0xffca16),
 
-            blue_100: rgb(0x243352),
-            blue_500: rgb(0x0a84ff),
+            blue_100: rgb(0x24335a),
+            blue_500: rgb(0x3b66c4),
             red_300: rgb(0xff4766),
 
             // `theme.css:101-107`.
@@ -929,17 +926,6 @@ impl Theme {
         match step {
             4..=6 => material.border.into(),
             _ => self.gray(step),
-        }
-    }
-
-    /// `ring-offset-gray-1`, the 1px gap between the selected Mode button and
-    /// its blue ring. Liquid Glass makes it transparent
-    /// (`--tw-ring-offset-color: transparent`) so the ring is not sitting on a
-    /// solid disc floating over the material.
-    pub fn ring_offset(&self) -> Hsla {
-        match self.material {
-            Some(material) if material.remaps_body() => gpui::transparent_black(),
-            _ => self.gray_1.into(),
         }
     }
 
@@ -1133,23 +1119,115 @@ impl Theme {
         color
     }
 
-    /// Tailwind v4's stock `blue-600` -- the target-select overlay's highlight
-    /// wash (`bg-blue-600/40`). Not a Radix step and not one of the app's own
-    /// `--blue-*` overrides: the overlay reaches straight for the Tailwind
-    /// palette there.
-    pub const TARGET_HIGHLIGHT: u32 = 0x155dfc;
+    /// The target-select overlay's highlight wash (`bg-blue-600/40` in the
+    /// Tauri app), in the Linku blue.
+    pub const TARGET_HIGHLIGHT: u32 = 0x3b66c4;
 
-    /// `--macos-settings-accent: AccentColor` -- the selected sidebar icon and
-    /// the checked toggle. `AccentColor` is the system-wide accent the user
-    /// picked in System Settings; gpui exposes no query for it, so this is
-    /// macOS's default blue. A user on a non-blue accent sees blue here and
-    /// their own colour in the Tauri app (README deviation).
-    pub const SETTINGS_ACCENT: u32 = 0x007aff;
+    /// `--macos-settings-accent` -- the selected sidebar icon and the checked
+    /// toggle. The Tauri app follows the system accent; this fork uses the
+    /// Linku blue everywhere instead.
+    pub const SETTINGS_ACCENT: u32 = 0x3b66c4;
 
     /// The TSX has a `#DCDCDC` unfocused state, but it hangs off an
     /// `onFocusChanged` the non-activating main panel never delivers -- the
     /// shipping lights stay colored, so no inactive color exists here.
     pub const TRAFFIC_CLOSE: u32 = 0xff5f57;
+}
+
+/// The Linku recorder palette: the muted brand blue for confidence and the
+/// neutral surfaces around it, resolved for one appearance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecorderPalette {
+    pub accent: Hsla,
+    pub on_accent: Hsla,
+    pub accent_soft: Hsla,
+    pub accent_border: Hsla,
+    pub accent_text: Hsla,
+    pub accent_icon: Hsla,
+    pub accent_detail: Hsla,
+    pub level: Hsla,
+    pub text: Hsla,
+    pub muted: Hsla,
+    pub tile: Hsla,
+    pub tile_border: Hsla,
+    pub tile_hover: Hsla,
+    pub tile_icon: Hsla,
+    pub off_icon: Hsla,
+    pub off_pill: Hsla,
+    pub off_pill_text: Hsla,
+    pub switch_track: Hsla,
+    pub switch_border: Hsla,
+    pub switch_thumb: Hsla,
+    pub switch_thumb_text: Hsla,
+    pub switch_text: Hsla,
+    pub popover: Hsla,
+    pub popover_border: Hsla,
+    pub popover_hover: Hsla,
+    pub footer_hover: Hsla,
+}
+
+impl RecorderPalette {
+    pub fn new(appearance: Appearance) -> Self {
+        let accent: Hsla = rgb(0x3b66c4).into();
+        match appearance {
+            Appearance::Light => Self {
+                accent,
+                on_accent: rgb(0xffffff).into(),
+                accent_soft: rgb(0xedf1fa).into(),
+                accent_border: rgba(0x3b66c459).into(),
+                accent_text: rgb(0x2a4b94).into(),
+                accent_icon: accent,
+                accent_detail: rgb(0x3d5a99).into(),
+                level: accent,
+                text: rgb(0x1d1d1f).into(),
+                muted: rgb(0x5f5f64).into(),
+                tile: rgba(0xffffffd9).into(),
+                tile_border: rgba(0x00000014).into(),
+                tile_hover: rgba(0x0000000a).into(),
+                tile_icon: rgb(0x3d3d40).into(),
+                off_icon: rgb(0x8a8a8e).into(),
+                off_pill: rgba(0x0000000f).into(),
+                off_pill_text: rgb(0x5f5f64).into(),
+                switch_track: rgba(0x0000000d).into(),
+                switch_border: rgba(0x0000000f).into(),
+                switch_thumb: rgb(0xffffff).into(),
+                switch_thumb_text: rgb(0x1d1d1f).into(),
+                switch_text: rgb(0x5f5f64).into(),
+                popover: rgb(0xffffff).into(),
+                popover_border: rgba(0x00000014).into(),
+                popover_hover: rgba(0x0000000d).into(),
+                footer_hover: rgba(0x0000000d).into(),
+            },
+            Appearance::Dark => Self {
+                accent,
+                on_accent: rgb(0xffffff).into(),
+                accent_soft: rgba(0x3b66c43d).into(),
+                accent_border: rgba(0x8ea8e073).into(),
+                accent_text: rgb(0xdde5f5).into(),
+                accent_icon: rgb(0x8ea8e0).into(),
+                accent_detail: rgb(0xa9bce6).into(),
+                level: rgb(0x6f8fd6).into(),
+                text: rgb(0xf5f5f7).into(),
+                muted: rgb(0xa1a1a6).into(),
+                tile: rgba(0xffffff0f).into(),
+                tile_border: rgba(0xffffff1a).into(),
+                tile_hover: rgba(0xffffff0d).into(),
+                tile_icon: rgb(0xd1d1d6).into(),
+                off_icon: rgb(0x8e8e93).into(),
+                off_pill: rgba(0xffffff14).into(),
+                off_pill_text: rgb(0xa1a1a6).into(),
+                switch_track: rgba(0xffffff0d).into(),
+                switch_border: rgba(0xffffff14).into(),
+                switch_thumb: rgba(0xffffff29).into(),
+                switch_thumb_text: rgb(0xf5f5f7).into(),
+                switch_text: rgb(0xa1a1a6).into(),
+                popover: rgb(0x2c2c2e).into(),
+                popover_border: rgba(0xffffff1a).into(),
+                popover_hover: rgba(0xffffff0f).into(),
+                footer_hover: rgba(0xffffff14).into(),
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1187,7 +1265,6 @@ mod tests {
             assert_eq!(theme.header_bg(), Hsla::from(theme.gray_2));
             assert_eq!(theme.header_border(), Hsla::from(theme.gray_5));
             assert_eq!(theme.body_text(), Hsla::from(theme.text_primary));
-            assert_eq!(theme.ring_offset(), Hsla::from(theme.gray_1));
             for step in 1..=12 {
                 assert_eq!(theme.body_fill(step), theme.gray(step));
                 assert_eq!(theme.body_hover_fill(step), theme.gray(step));
@@ -1231,8 +1308,6 @@ mod tests {
             assert_eq!(theme.header_bg().a, 0.);
             assert_eq!(theme.header_border(), gpui::transparent_black());
             assert_eq!(theme.body_text(), Hsla::from(material.text));
-            // `.ring-offset-gray-1 { --tw-ring-offset-color: transparent }`
-            assert_eq!(theme.ring_offset(), gpui::transparent_black());
 
             // `.bg-gray-2, .bg-gray-3 -> control-fill`, `.bg-gray-4 ->
             // control-hover`, `.bg-gray-5 -> control-active`.

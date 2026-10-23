@@ -33,6 +33,11 @@ const FONTS: &[(&str, &[u8])] = assets!("fonts":
     "Geist-Bold.ttf",
     // Adobe, SIL Open Font License 1.1 (the licence is embedded in the font).
     "SourceSerif4-Light.ttf",
+    // SIL Open Font License 1.1: the Linku recorder face.
+    "Sen-Regular.ttf",
+    "Sen-Medium.ttf",
+    "Sen-SemiBold.ttf",
+    "Sen-Bold.ttf",
 );
 
 /// Mostly Cap's own icon set, lifted from `packages/ui-solid/icons`. gpui
@@ -94,8 +99,7 @@ const ICONS: &[(&str, &[u8])] = assets!("icons":
     "keyboard.svg",
     "layers.svg",
     "layout.svg",
-    "logo-full-dark.svg",
-    "logo-full.svg",
+    "kiekes-mark.svg",
     "message-bubble.svg",
     "message-square-plus.svg",
     "mic-off.svg",
@@ -118,6 +122,8 @@ const ICONS: &[(&str, &[u8])] = assets!("icons":
     "rotate-3d.svg",
     "type.svg",
     "video.svg",
+    "video-off.svg",
+    "photo-camera.svg",
     "pause.svg",
     "pause-circle.svg",
     "person-standing.svg",

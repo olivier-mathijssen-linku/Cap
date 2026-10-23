@@ -26,7 +26,7 @@ use crate::{
     settings_window::Page,
     sign_in::{SignIn, SignInEvent, SignInOrigin, SignInOutcome},
     target_thumbnails,
-    theme::Theme,
+    theme::{RecorderPalette, Theme},
     ui,
 };
 use gpui::{Entity, Task};
@@ -35,7 +35,7 @@ use gpui::{Entity, Task};
 const HEADER_HEIGHT: f32 = 36.;
 
 /// `h-[42px]` in deviceRowStyles.ts.
-const DEVICE_ROW_HEIGHT: f32 = 42.;
+const DEVICE_ROW_HEIGHT: f32 = 50.;
 
 fn remembered_camera(id: &recording::DeviceOrModelID, cameras: &[CameraOption]) -> CameraOption {
     cameras
@@ -141,14 +141,6 @@ impl Mode {
         }
     }
 
-    /// `size-4` for instant, `size-[0.9rem]` for the other two.
-    fn icon_size(self) -> f32 {
-        match self {
-            Self::Instant => 16.,
-            Self::Studio | Self::Screenshot => 14.4,
-        }
-    }
-
     /// `ModeInfoPanel`'s `modeOptions`, which is *not* `MODE_BUTTONS` -- the
     /// hover cards and the info panel describe the modes differently and the
     /// app carries both sets of strings.
@@ -205,68 +197,6 @@ fn shadow(color: Hsla, y: f32, blur: f32, spread: f32, inset: bool) -> gpui::Box
         blur_radius: px(blur),
         spread_radius: px(spread),
         inset,
-    }
-}
-
-/// Drawn in gpui rather than with an `NSGlassEffectView` per button, which
-/// would have to track gpui's layout under the Metal layer. Two shadows, one
-/// unblurred, keep it cheap on a window that repaints with the mic meter.
-fn glass_button<E: Styled>(element: E, theme: Theme, selected: bool) -> E {
-    let dark = theme.is_dark();
-    let (top, bottom, rim) = match (selected, dark) {
-        (false, false) => (
-            gpui::hsla(0., 0., 1., 0.7),
-            gpui::hsla(0., 0., 1., 0.58),
-            gpui::hsla(0., 0., 0., 0.08),
-        ),
-        (false, true) => (
-            gpui::hsla(0., 0., 1., 0.085),
-            gpui::hsla(0., 0., 1., 0.06),
-            gpui::hsla(0., 0., 1., 0.07),
-        ),
-        (true, false) => (
-            Theme::with_alpha(theme.blue_3, 0.9),
-            Theme::with_alpha(theme.blue_3, 0.75),
-            Theme::with_alpha(theme.blue_8, 0.4),
-        ),
-        (true, true) => (
-            Theme::with_alpha(theme.blue_9, 0.24),
-            Theme::with_alpha(theme.blue_9, 0.18),
-            Theme::with_alpha(theme.blue_9, 0.3),
-        ),
-    };
-    let (highlight, lift) = if dark {
-        (gpui::hsla(0., 0., 1., 0.07), gpui::hsla(0., 0., 0., 0.2))
-    } else {
-        (gpui::hsla(0., 0., 1., 0.8), gpui::hsla(0., 0., 0., 0.04))
-    };
-    element
-        .bg(gpui::linear_gradient(
-            180.,
-            gpui::linear_color_stop(top, 0.),
-            gpui::linear_color_stop(bottom, 1.),
-        ))
-        .border_1()
-        .border_color(rim)
-        .shadow(vec![
-            shadow(highlight, 1., 0., 0., true),
-            shadow(lift, 1., 2., 0., false),
-        ])
-}
-
-fn capture_hover_fill(theme: Theme, selected: bool) -> Hsla {
-    if selected {
-        Theme::with_alpha(theme.blue_9, 0.06)
-    } else {
-        glass_tint(theme, 0.04, 0.05)
-    }
-}
-
-fn capture_press_fill(theme: Theme, selected: bool) -> Hsla {
-    if selected {
-        Theme::with_alpha(theme.blue_9, 0.12)
-    } else {
-        glass_tint(theme, 0.07, 0.09)
     }
 }
 
@@ -792,6 +722,8 @@ pub struct MainWindow {
     mode_hover_task: Option<Task<()>>,
     mode_hover_bounds: [Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>; 3],
     target: Option<TargetType>,
+    source_menu: bool,
+    more_menu: bool,
     devices: DeviceSnapshot,
     camera: Option<CameraOption>,
     camera_id: Option<recording::DeviceOrModelID>,
@@ -1085,6 +1017,8 @@ impl MainWindow {
             mode_hover_task: None,
             mode_hover_bounds: std::array::from_fn(|_| Rc::new(Cell::new(None))),
             target: None,
+            source_menu: false,
+            more_menu: false,
             devices: DeviceSnapshot::default(),
             camera: None,
             camera_id: None,
@@ -1690,7 +1624,7 @@ impl MainWindow {
         };
         if !recover
             && !crate::platform::confirm_dialog(
-                "Cap",
+                "Kiekes",
                 "Are you sure you want to delete this recording?",
                 "Yes",
                 "No",
@@ -2497,7 +2431,7 @@ impl MainWindow {
             }
             let available = storage.available_bytes as f64 / 1_073_741_824.0;
             let detail = if can_start {
-                format!("Only {available:.2} GB is available on your recording drive. Cap will stop automatically if storage gets too low, preserving your recording.")
+                format!("Only {available:.2} GB is available on your recording drive. Kiekes will stop automatically if storage gets too low, preserving your recording.")
             } else {
                 format!("Only {available:.2} GB is available on your recording drive. Free up space so at least 512 MB is available before recording.")
             };
@@ -2633,11 +2567,11 @@ impl MainWindow {
             return None;
         }
         Some(PillState::Access(if access.requesting(permission) {
-            "Asking…"
+            "Even vragen…"
         } else if access.status(permission) == crate::permissions::OSPermissionStatus::Denied {
-            "Allow in Settings"
+            "Toestaan in Instellingen"
         } else {
-            "Allow"
+            "Toestaan"
         }))
     }
 
@@ -2738,13 +2672,9 @@ impl Render for MainWindow {
         let meter_active = self.panel.is_none()
             && self.microphone.is_some()
             && self.session.read(cx).phase == Phase::Idle;
+        let palette = RecorderPalette::new(theme.appearance);
         self.microphone_level.update(cx, |meter, cx| {
-            meter.configure(
-                meter_active,
-                theme.blue_9.into(),
-                gpui::transparent_black(),
-                cx,
-            );
+            meter.configure(meter_active, palette.level, gpui::transparent_black(), cx);
         });
         let device_meter_active = self.microphone.is_some()
             && matches!(self.panel, Some(Panel::Device(DeviceMenu::Microphone)));
@@ -2785,6 +2715,16 @@ impl Render for MainWindow {
             .text_color(theme.text_primary)
             .child(self.render_header(window, cx))
             .child(self.render_body(cx))
+            .when(
+                self.panel.is_none() && (self.source_menu || self.more_menu),
+                |this| this.child(self.render_menu_scrim(cx)),
+            )
+            .when(self.panel.is_none() && self.source_menu, |this| {
+                this.child(self.render_source_menu(cx))
+            })
+            .when(self.panel.is_none() && self.more_menu, |this| {
+                this.child(self.render_more_menu(cx))
+            })
             .children(self.render_mode_hover(cx))
             .when(
                 // The controls bar owns the live-recording UI; this overlay is
@@ -2816,6 +2756,10 @@ impl Render for MainWindow {
                 this.child(self.render_idle_error(error, cx))
             })
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.close_menus(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.dismiss_main(cx) {
                     cx.stop_propagation();
                 }
@@ -3054,7 +2998,7 @@ impl MainWindow {
             .filter(|_| !pending);
 
         let message = if pending {
-            "Finish signing in to Cap in your browser. Cap comes back here and opens the recorder when you're done."
+            "Finish signing in to Kiekes in your browser. Kiekes comes back here and opens the recorder when you're done."
         } else {
             "Instant Mode uploads while you record, so your shareable link is ready the moment you stop."
         };
@@ -3368,7 +3312,14 @@ impl MainWindow {
             .when(!cfg!(target_os = "windows"), |header| {
                 header.child(self.render_traffic_lights(cx))
             })
-            .child(self.render_header_actions(cx));
+            .child(div().id("drag-region").flex_1().min_w_0().h_full().when(
+                !cfg!(target_os = "windows"),
+                |region| {
+                    region.on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.start_window_move();
+                    })
+                },
+            ));
 
         #[cfg(target_os = "windows")]
         let header = header.child(self.render_windows_caption_controls(_window, cx));
@@ -3509,138 +3460,6 @@ impl MainWindow {
             )
     }
 
-    /// The teleported header content: a help button, a drag spacer, then the
-    /// right-hand cluster. 20px hit targets (`size-5`) 4px apart (`gap-1`),
-    /// 8px from the window edges (`mx-2`).
-    fn render_header_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.theme;
-
-        // `IconButton::header`: a 20px hit box with no fill, `text-gray-11`
-        // going to `text-gray-12` on hover.
-        let icon_button = |id: &'static str, path: &'static str, size: f32| {
-            let label = match id {
-                "help" => "Help & Tour",
-                "settings" => "Settings",
-                "screenshots" => "Screenshots",
-                "recordings" => "Recordings",
-                "teleprompter" => "Teleprompter",
-                "changelog" => "Changelog",
-                _ => unreachable!(),
-            };
-            div()
-                .id(id)
-                .group(id)
-                .when(cfg!(target_os = "windows"), |this| this.occlude())
-                .tab_index(0)
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(20.))
-                .flex_shrink_0()
-                .rounded_full()
-                .text_color(theme.gray_11)
-                .hover(|style| style.text_color(theme.gray_12))
-                .tooltip(move |_, cx| ui::Tooltip::new(&theme, label).view(cx))
-                .tooltip_show_delay(ui::TOOLTIP_SHOW_DELAY)
-                .child(
-                    svg()
-                        .path(path)
-                        .size(px(size))
-                        .text_color(theme.gray_11)
-                        .group_hover(id, |style| style.text_color(theme.gray_12)),
-                )
-        };
-
-        let actions = div()
-            .flex()
-            .flex_1()
-            .items_center()
-            .gap(px(4.))
-            .mx(px(8.))
-            .min_w_0()
-            .child(
-                icon_button("help", "icons/circle-help.svg", 16.).on_click(cx.listener(
-                    |_, _, _window, cx| {
-                        cx.defer(app_windows::open_onboarding);
-                    },
-                )),
-            )
-            // Keep drag handlers off the header root: starting native dragging
-            // on a button's mouse-down consumes its later click.
-            .child(div().id("drag-region").flex_1().min_w_0().h_full().when(
-                !cfg!(target_os = "windows"),
-                |region| {
-                    region.on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                        window.start_window_move();
-                    })
-                },
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.))
-                    .flex_shrink_0()
-                    .child(icon_button("settings", "icons/settings.svg", 16.).on_click(
-                        cx.listener(|_, _, _window, cx| {
-                            // `await commands.showWindow({ Settings: {
-                            //  page: "general" } }); getCurrentWindow()
-                            //  .hide()` -- both halves live in
-                            // `open_settings`. Deferred because opening a
-                            // window inside this update would double-lease
-                            // the view (the `sync_overlays` rule).
-                            cx.defer(|cx: &mut gpui::App| {
-                                app_windows::open_settings(
-                                    crate::settings_window::Page::General,
-                                    cx,
-                                )
-                            });
-                        }),
-                    ))
-                    .child(icon_button("screenshots", "icons/image.svg", 16.).on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.open_panel(Panel::Library(LibraryKind::Screenshots), window, cx);
-                        }),
-                    ))
-                    .child(
-                        icon_button("recordings", "icons/play-circle.svg", 16.).on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.open_panel(
-                                    Panel::Library(LibraryKind::Recordings),
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        ),
-                    )
-                    .child(
-                        icon_button("teleprompter", "icons/scan-text.svg", 16.).on_click(
-                            cx.listener(|_, _, _window, cx| {
-                                // `onClick={() => void openTeleprompter()}` on
-                                // the header's `IconLucideScanText` button.
-                                // Deferred for the same reason the gear is.
-                                cx.defer(app_windows::open_teleprompter);
-                            }),
-                        ),
-                    )
-                    .child(
-                        icon_button("changelog", "icons/bell.svg", 16.).on_click(cx.listener(
-                            |_, _, _window, cx| {
-                                cx.defer(|cx: &mut gpui::App| {
-                                    app_windows::open_settings(Page::Changelog, cx)
-                                });
-                            },
-                        )),
-                    ),
-            );
-
-        #[cfg(target_os = "windows")]
-        let actions = actions.h_full();
-
-        actions
-    }
-
     fn idle_error(&self, cx: &gpui::App) -> Option<String> {
         let session = self.session.read(cx);
         session
@@ -3743,31 +3562,17 @@ impl MainWindow {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .px(px(13.))
-            .pb(px(8.))
-            .gap(px(8.))
             // `.cap-window-body { color: var(--macos-settings-text) }` under
             // panel glass; `--text-primary` otherwise.
             .text_color(self.theme.body_text());
 
-        // The logo/mode row is hidden while a picker is open -- the panel takes
-        // the full body, exactly as `!activeMenu() && ...` does in index.tsx.
         match self.panel {
-            Some(panel) => root.child(self.render_panel(panel, cx)),
-            None => root.child(self.render_logo_row(cx)).child(
-                div()
-                    .id("home-scroll")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .pb(px(4.))
-                    .gap(px(8.))
-                    .overflow_y_scroll()
-                    .child(self.render_targets(cx))
-                    .child(self.render_base_controls(cx)),
-            ),
+            Some(panel) => root
+                .px(px(13.))
+                .pb(px(8.))
+                .gap(px(8.))
+                .child(self.render_panel(panel, cx)),
+            None => root.child(self.render_home(cx)),
         }
     }
 
@@ -3835,7 +3640,7 @@ impl MainWindow {
                         .flex_col()
                         .gap(px(8.))
                         .text_size(px(12.))
-                        .child("Recording paused. Cap will hide before resuming.")
+                        .child("Recording paused. Kiekes will hide before resuming.")
                         .child(
                             div()
                                 .id("resume-clean-recording")
@@ -4083,6 +3888,8 @@ impl MainWindow {
     }
 
     pub fn open_panel(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_menu = false;
+        self.more_menu = false;
         self.input_poll_task = None;
         self.input_poll_generation = self.input_poll_generation.wrapping_add(1);
         self.clear_mode_hover();
@@ -4935,7 +4742,7 @@ impl MainWindow {
     ) {
         cx.spawn_in(window, async move |this, cx| {
             if !crate::platform::confirm_dialog(
-                "Cap",
+                "Kiekes",
                 "Are you sure you want to delete this recording?",
                 "Yes",
                 "No",
@@ -4969,7 +4776,7 @@ impl MainWindow {
     ) {
         cx.spawn_in(window, async move |this, cx| {
             if !crate::platform::confirm_dialog(
-                "Cap",
+                "Kiekes",
                 "Are you sure you want to delete this screenshot?",
                 "Yes",
                 "No",
@@ -5595,7 +5402,6 @@ impl MainWindow {
                                 this.selected_display = Some(chosen.clone());
                                 this.target = Some(TargetType::Display);
                                 this.close_panel(cx);
-                                this.sync_overlays(cx);
                             }),
                         )
                         .into_any_element(),
@@ -5628,7 +5434,6 @@ impl MainWindow {
                                 this.selected_window = Some(chosen.clone());
                                 this.target = Some(TargetType::Window);
                                 this.close_panel(cx);
-                                this.sync_overlays(cx);
                                 this.focus_selected_window(cx);
                             }),
                         )
@@ -5803,7 +5608,7 @@ impl MainWindow {
                                         // (`ModeInfoPanel.tsx:106`). `font-semibold`
                                         // renders 700: no 600 face is loaded over
                                         // there (`ui-solid/vite.js:31-33`).
-                                        .font_weight(FontWeight::BOLD)
+                                        .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(if selected {
                                             theme.blue_11
                                         } else {
@@ -5846,11 +5651,11 @@ impl MainWindow {
             DeviceMenu::Microphone => "microphone",
         };
         let message = if denied {
-            format!("Cap can't use your {noun}. Turn it on in System Settings.")
+            format!("Kiekes can't use your {noun}. Turn it on in System Settings.")
         } else if requesting {
             "Choose Allow in the macOS prompt.".to_string()
         } else {
-            format!("Cap needs your OK to use your {noun}.")
+            format!("Kiekes needs your OK to use your {noun}.")
         };
         let label = if denied {
             "Open System Settings"
@@ -5994,120 +5799,6 @@ impl MainWindow {
             .on_click(on_click)
     }
 
-    fn render_logo_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let recording_clip = self.session.read(cx).editor_recording_target().is_some();
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .mt(px(4.))
-            .flex_shrink_0()
-            .child(
-                // `flex items-center space-x-1` around the logo and its badge.
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.))
-                    .when(!recording_clip, |this| {
-                        this.child(self.render_logo())
-                            .child(self.render_plan_badge())
-                    })
-                    .when(recording_clip, |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.))
-                                .child(div().text_size(px(13.)).child("Record a new clip"))
-                                .child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .text_color(self.theme.gray_11)
-                                        .child("Add to your current project"),
-                                ),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(self.render_mode_pill(cx))
-                    .child(
-                        div()
-                            .text_size(px(9.))
-                            .line_height(px(11.))
-                            .text_color(self.theme.gray_11)
-                            .child(format!("{} Mode", self.effective_mode(cx).panel_title())),
-                    ),
-            )
-    }
-
-    /// The plan badge: Personal is `text-[0.6rem] ml-2 rounded-lg border
-    /// border-gray-5 px-1 py-0.5 bg-gray-3 hover:bg-gray-5`, a button; Pro and
-    /// Commercial are a non-interactive span on `--blue-400`. Which one
-    /// applies is [`PlanBadge::current`], the license query's resolution.
-    fn render_plan_badge(&self) -> impl IntoElement {
-        let theme = self.theme;
-
-        let badge = div()
-            .id("plan-badge")
-            .flex()
-            .items_center()
-            .flex_shrink_0()
-            .ml(px(8.))
-            .px(px(4.))
-            .py(px(2.))
-            .rounded(px(8.))
-            .text_size(px(9.6));
-
-        match self.plan {
-            PlanBadge::Personal => badge
-                .border_1()
-                .border_color(theme.body_border(5))
-                .bg(theme.body_fill(3))
-                .text_color(theme.gray_12)
-                .child("Personal")
-                .hover(|style| style.bg(theme.body_hover_fill(5)))
-                .on_click(|_, _, cx| {
-                    cx.open_url(crate::auth::PRICING_URL);
-                }),
-            PlanBadge::Pro | PlanBadge::Commercial => badge
-                .bg(theme.blue_9)
-                .text_color(gpui::white())
-                .child(if self.plan == PlanBadge::Commercial {
-                    "Commercial"
-                } else {
-                    "Pro"
-                }),
-        }
-    }
-
-    /// This goes through `img()`, not `svg()`. The two take different paths in
-    /// gpui: `svg()` keeps only the alpha and tints it with one colour, which
-    /// would flatten the badge, the three blue rings and the wordmark into a
-    /// single silhouette, whereas `img()` rasterises through resvg and keeps
-    /// the colour. `img()` also renders at `SMOOTH_SVG_SCALE_FACTOR` (2x), so
-    /// the 103px-wide source becomes a 206px raster -- more than the 168 device
-    /// pixels an 84px lockup needs on a 2x display.
-    ///
-    /// The app ships two files rather than recolouring one, so this picks the
-    /// same way it does.
-    fn render_logo(&self) -> impl IntoElement {
-        img(if self.theme.is_dark() {
-            "icons/logo-full-dark.svg"
-        } else {
-            "icons/logo-full.svg"
-        })
-        .w(px(84.))
-        .h(px(84. * 40. / 103.))
-        .flex_shrink_0()
-    }
-
     fn clear_mode_hover(&mut self) {
         self.mode_hover_task = None;
         self.mode_hover = ModeHoverState::default();
@@ -6175,436 +5866,689 @@ impl MainWindow {
         )
     }
 
-    /// `Mode.tsx`: `p-1.5 gap-2 rounded-full border border-gray-5 bg-gray-3`,
-    /// 28px round buttons (`size-7`). Selected gets `bg-gray-7` plus a 2px
-    /// `blue-500` ring offset 1px against `gray-1`.
-    fn render_mode_pill(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.theme;
+    /// `BaseControls`: camera, microphone, system audio.
+    fn render_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
+        let dimmed = self.effective_mode(cx) == Mode::Screenshot;
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .px(px(13.))
+            .pt(px(4.))
+            .pb(px(6.))
+            .text_color(palette.text)
+            .child(self.render_mode_switch(cx))
+            .child(
+                div()
+                    .mt(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(self.render_source_row(cx))
+                    .child(self.render_base_controls(dimmed, cx)),
+            )
+            .child(self.render_start_button(cx))
+            .child(self.render_footer(cx))
+    }
+
+    fn render_mode_switch(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
         let selected_mode = self.effective_mode(cx);
         let locked = self.session.read(cx).editor_recording_target().is_some();
-
-        let button = |mode: Mode, id: &'static str, index: usize| {
-            let selected = mode == selected_mode;
-            let bounds = self.mode_hover_bounds[index].clone();
-            div()
-                .id(SharedString::from(id))
-                .tab_index(0)
-                .relative()
-                .on_hover(cx.listener(move |this, hovered, _, cx| {
-                    this.update_mode_hover(mode, false, *hovered, cx);
-                }))
-                .when(locked && !selected, |this| this.opacity(0.5))
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(28.))
-                .rounded_full()
-                .bg(if selected {
-                    Hsla::from(theme.gray_7)
-                } else {
-                    theme.body_fill(3)
-                })
-                .when(selected, |this| {
-                    // `ring-2 ring-blue-500 ring-offset-1 ring-offset-gray-1`.
-                    this.border_2()
-                        .border_color(theme.blue_500)
-                        .shadow(vec![gpui::BoxShadow {
-                            color: theme.ring_offset(),
-                            offset: gpui::point(px(0.), px(0.)),
-                            blur_radius: px(0.),
-                            spread_radius: px(1.),
-                            inset: false,
-                        }])
-                })
-                .child(
-                    gpui::canvas(move |value, _, _| bounds.set(Some(value)), |_, _, _, _| {})
-                        .absolute()
-                        .size_full(),
-                )
-                .child(
-                    svg()
-                        .path(mode.icon())
-                        .size(px(mode.icon_size()))
-                        .text_color(theme.gray_12),
-                )
-                .hover(|style| style.bg(theme.body_hover_fill(7)))
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    if this.session.read(cx).editor_recording_target().is_some() {
-                        return;
-                    }
-                    this.set_mode(mode, cx);
-                    cx.defer(app_windows::refresh_target_overlays);
-                }))
+        let thumb_shadow = if self.theme.is_dark() {
+            vec![shadow(black_alpha(0.4), 1., 2., 0., false)]
+        } else {
+            vec![
+                shadow(black_alpha(0.12), 1., 2., 0., false),
+                shadow(black_alpha(0.06), 0., 0., 0.5, false),
+            ]
         };
 
+        let mut modes = Vec::new();
+        if !crate::direct_drive::enabled() {
+            modes.push((
+                Mode::Instant,
+                "mode-instant",
+                "Instant",
+                "icons/instant.svg",
+            ));
+        }
+        modes.push((Mode::Studio, "mode-studio", "Video", "icons/video.svg"));
+        modes.push((
+            Mode::Screenshot,
+            "mode-screenshot",
+            "Afbeelding",
+            "icons/photo-camera.svg",
+        ));
+
         div()
-            .relative()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .gap(px(4.))
+            .p(px(4.))
+            .rounded_full()
+            .bg(palette.switch_track)
+            .border_1()
+            .border_color(palette.switch_border)
+            .children(modes.into_iter().map(|(mode, id, label, icon)| {
+                let selected = mode == selected_mode;
+                let color = if selected {
+                    palette.switch_thumb_text
+                } else {
+                    palette.switch_text
+                };
+                div()
+                    .id(id)
+                    .tab_index(0)
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .h(px(32.))
+                    .rounded_full()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color)
+                    .when(selected, |this| {
+                        this.bg(palette.switch_thumb).shadow(thumb_shadow.clone())
+                    })
+                    .when(!selected && !locked, |this| {
+                        this.hover(|style| style.bg(palette.tile_hover))
+                    })
+                    .when(locked && !selected, |this| this.opacity(0.5))
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(16.))
+                            .flex_shrink_0()
+                            .text_color(color),
+                    )
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        if this.session.read(cx).editor_recording_target().is_some() {
+                            return;
+                        }
+                        this.set_mode(mode, cx);
+                        cx.defer(app_windows::refresh_target_overlays);
+                    }))
+            }))
+    }
+
+    fn source_kind(&self) -> TargetType {
+        self.target.unwrap_or(TargetType::Display)
+    }
+
+    fn source_detail(&self, kind: TargetType) -> SharedString {
+        match kind {
+            TargetType::Display => {
+                let primary = scap_targets::Display::primary().id();
+                self.selected_display
+                    .as_ref()
+                    .or_else(|| {
+                        self.devices
+                            .displays
+                            .iter()
+                            .find(|display| display.id == primary)
+                    })
+                    .map(|display| SharedString::from(display.label.clone()))
+                    .unwrap_or_else(|| "Hoofdscherm".into())
+            }
+            TargetType::Window => self
+                .selected_window
+                .as_ref()
+                .map(|window| SharedString::from(format!("{} — {}", window.app, window.label)))
+                .unwrap_or_else(|| "Kies een venster".into()),
+            TargetType::Area => "Sleep om een gebied te kiezen".into(),
+            TargetType::CameraOnly => self
+                .camera
+                .as_ref()
+                .map(|camera| SharedString::from(camera.label.clone()))
+                .unwrap_or_else(|| "Kies eerst een camera".into()),
+        }
+    }
+
+    fn render_source_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
+        let kind = self.source_kind();
+
+        div()
+            .id("source-row")
+            .tab_index(0)
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(8.))
-            .p(px(6.))
-            .rounded_full()
+            .gap(px(12.))
+            .h(px(50.))
+            .pl(px(14.))
+            .pr(px(12.))
+            .rounded(px(12.))
+            .bg(palette.accent_soft)
             .border_1()
-            .border_color(theme.body_border(5))
-            .bg(theme.body_fill(3))
-            .when(!crate::direct_drive::enabled(), |this| {
-                this.child(button(Mode::Instant, "mode-instant", 0))
-            })
-            .child(button(Mode::Studio, "mode-studio", 1))
-            .child(button(Mode::Screenshot, "mode-screenshot", 2))
-            // `absolute -left-1.5 -top-2 p-1 rounded-full bg-gray-5`, hanging
-            // off the pill's top-left corner.
+            .border_color(palette.accent_border)
+            .text_color(palette.accent_text)
+            .cursor_default()
+            .active(|style| style.opacity(0.85))
             .child(
-                div()
-                    .id("mode-info")
-                    .tab_index(0)
-                    .tooltip(move |_, cx| ui::Tooltip::new(&theme, "Recording mode info").view(cx))
-                    .tooltip_show_delay(ui::TOOLTIP_SHOW_DELAY)
-                    .absolute()
-                    .left(px(-6.))
-                    .top(px(-8.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p(px(4.))
-                    .rounded_full()
-                    .bg(theme.body_fill(5))
-                    .child(
-                        svg()
-                            .path("icons/info.svg")
-                            .size(px(10.))
-                            .text_color(theme.gray_12),
-                    )
-                    .hover(|style| style.opacity(0.5))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        // What shipping new-main actually does: it passes
-                        // `onInfoClick` into `Mode.tsx`, so the dot opens the
-                        // in-window info panel -- `showWindow("ModeSelect")` is
-                        // `Mode.tsx`'s *fallback*, and nothing in the shipping
-                        // frontend reaches it. The standalone window exists
-                        // here for parity (`CAP_GPUI_AUTO_MODE_SELECT` opens
-                        // it), but the dot mirrors the observed behavior.
-                        this.open_panel(Panel::ModeInfo, window, cx);
-                    })),
-            )
-    }
-
-    fn render_targets(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .w_full()
-            .flex_shrink_0()
-            .child(
-                div()
-                    .px(px(4.))
-                    .text_size(px(10.))
-                    .line_height(px(14.))
-                    .text_color(self.theme.gray_11)
-                    .child("Choose a capture source"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.))
-                    .items_stretch()
-                    .w_full()
-                    .child(self.render_split_target(TargetType::Display, cx))
-                    .child(self.render_split_target(TargetType::Window, cx)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.))
-                    .items_stretch()
-                    .w_full()
-                    .child(self.render_target_tile(TargetType::Area, cx))
-                    .child(self.render_target_tile(TargetType::CameraOnly, cx)),
-            )
-    }
-
-    /// Display and Window are split controls: the tile plus a 28px
-    /// (`w-7`) chevron button, sharing one rounded border.
-    fn render_split_target(&self, target: TargetType, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.theme;
-        let selected = self.target == Some(target);
-        let dropdown_id = SharedString::from(format!("{}-dropdown", target.label()));
-
-        div()
-            .flex()
-            .flex_1()
-            .overflow_hidden()
-            .rounded(px(10.))
-            .map(|this| glass_button(this, theme, selected))
-            .child(self.target_button_inner(target, true, cx))
-            .child(
-                div()
-                    .id(dropdown_id.clone())
-                    .flex()
-                    .w(px(28.))
-                    .rounded_r(px(9.))
+                svg()
+                    .path(kind.icon())
+                    .size(px(20.))
                     .flex_shrink_0()
-                    .items_center()
-                    .justify_center()
+                    .text_color(palette.accent_icon),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(1.))
                     .child(
                         div()
-                            .absolute()
-                            .left_0()
-                            .top(px(10.))
-                            .bottom(px(10.))
-                            .w(px(1.))
-                            .bg(if selected {
-                                Theme::with_alpha(theme.blue_9, 0.25)
-                            } else {
-                                glass_tint(theme, 0.08, 0.1)
-                            }),
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(source_label(kind)),
                     )
-                    .relative()
                     .child(
-                        svg()
-                            .path("icons/chevron-down.svg")
-                            .size(px(14.))
-                            .text_color(if selected {
-                                theme.blue_10
-                            } else {
-                                theme.gray_10
-                            }),
-                    )
-                    .hover(move |style| style.bg(capture_hover_fill(theme, selected)))
-                    .active(move |style| style.bg(capture_press_fill(theme, selected)))
-                    .tooltip(move |_, cx| {
-                        ui::Tooltip::new(
-                            &theme,
-                            match target {
-                                TargetType::Display => "Choose a display",
-                                TargetType::Window => "Choose a window",
-                                _ => unreachable!(),
-                            },
-                        )
-                        .view(cx)
-                    })
-                    .tooltip_show_delay(ui::TOOLTIP_SHOW_DELAY)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_panel(Panel::Target(target), window, cx);
-                    })),
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(14.))
+                            .text_color(palette.accent_detail)
+                            .truncate()
+                            .child(self.source_detail(kind)),
+                    ),
+            )
+            .child(
+                svg()
+                    .path("icons/chevron-down.svg")
+                    .size(px(16.))
+                    .flex_shrink_0()
+                    .text_color(palette.accent_text),
+            )
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.source_menu = !this.source_menu;
+                this.more_menu = false;
+                cx.notify();
+            }))
+    }
+
+    fn close_menus(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.source_menu && !self.more_menu {
+            return false;
+        }
+        self.source_menu = false;
+        self.more_menu = false;
+        cx.notify();
+        true
+    }
+
+    fn render_menu_scrim(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("menu-scrim")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .occlude()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _window, cx| {
+                    this.close_menus(cx);
+                }),
             )
     }
 
-    /// Area and Camera Only are plain tiles with their own border.
-    fn render_target_tile(&self, target: TargetType, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.theme;
-        let selected = self.target == Some(target);
-
+    fn render_popover(&self) -> gpui::Div {
+        let palette = RecorderPalette::new(self.theme.appearance);
         div()
+            .absolute()
+            .occlude()
             .flex()
-            .flex_1()
-            .overflow_hidden()
-            .rounded(px(10.))
-            .map(|this| glass_button(this, theme, selected))
-            .child(self.target_button_inner(target, false, cx))
+            .flex_col()
+            .p(px(6.))
+            .rounded(px(12.))
+            .bg(palette.popover)
+            .border_1()
+            .border_color(palette.popover_border)
+            .shadow(vec![shadow(
+                black_alpha(if self.theme.is_dark() { 0.5 } else { 0.18 }),
+                12.,
+                30.,
+                0.,
+                false,
+            )])
     }
 
-    fn target_button_inner(
-        &self,
-        target: TargetType,
-        split: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = self.theme;
-        let selected = self.target == Some(target);
-        let icon_color = if selected {
-            theme.blue_10
-        } else {
-            theme.gray_10
+    fn render_menu_divider(&self) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
+        div()
+            .h(px(1.))
+            .mx(px(4.))
+            .my(px(6.))
+            .bg(palette.popover_border)
+    }
+
+    fn render_source_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
+        let current = self.source_kind();
+
+        let item = |kind: TargetType| {
+            let selected = kind == current;
+            let color = if selected {
+                palette.on_accent
+            } else {
+                palette.text
+            };
+            div()
+                .id(SharedString::from(format!("source-{}", kind.label())))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .h(px(40.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .text_size(px(13.))
+                .text_color(color)
+                .when(selected, |this| this.bg(palette.accent))
+                .when(!selected, |this| {
+                    this.hover(|style| style.bg(palette.popover_hover))
+                })
+                .child(
+                    svg()
+                        .path(kind.icon())
+                        .size(px(16.))
+                        .flex_shrink_0()
+                        .text_color(color),
+                )
+                .child(div().flex_1().min_w_0().child(source_label(kind)))
+                .when(
+                    selected && matches!(kind, TargetType::Display | TargetType::Window),
+                    |this| {
+                        this.child(
+                            div()
+                                .id(SharedString::from(format!("source-pick-{}", kind.label())))
+                                .text_size(px(12.))
+                                .underline()
+                                .child("Kies")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.open_panel(Panel::Target(kind), window, cx);
+                                })),
+                        )
+                    },
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.choose_source(kind, window, cx);
+                }))
         };
-        let label_color = if selected {
-            theme.blue_11
-        } else {
-            theme.gray_12
-        };
 
-        let icon = svg()
-            .path(target.icon())
-            .size(px(20.))
-            .flex_shrink_0()
-            .text_color(icon_color);
-
-        let base = div()
-            .id(SharedString::from(target.label()))
-            .flex()
-            .flex_1()
-            .py(px(8.))
-            .when(split, |this| this.rounded_l(px(9.)))
-            .when(!split, |this| this.rounded(px(9.)))
-            .hover(move |style| style.bg(capture_hover_fill(theme, selected)))
-            .active(move |style| style.bg(capture_press_fill(theme, selected)))
-            .on_click(cx.listener(move |this, _, _window, cx| {
-                // `toggleTargetMode`: clicking the armed tile again is a
-                // cancel, which takes the overlays down with it.
-                this.target = if this.target == Some(target) {
-                    None
-                } else {
-                    Some(target)
-                };
-                this.sync_overlays(cx);
-                cx.notify();
-            }));
-
-        base.flex_col()
-            .items_center()
-            .justify_end()
-            .gap(px(4.))
-            // `pl-5` on the split controls when compact, to keep the icon
-            // optically centred against the chevron on the right.
-            .when(split, |this| this.pl(px(20.)))
-            .child(icon)
+        self.render_popover()
+            .top(px(152.))
+            .left(px(13.))
+            .right(px(13.))
+            .child(item(TargetType::Display))
+            .child(item(TargetType::Window))
+            .child(item(TargetType::Area))
+            .child(self.render_menu_divider())
             .child(
                 div()
-                    .text_size(px(12.))
-                    .line_height(px(16.))
-                    .text_color(label_color)
-                    .child(target.label()),
+                    .px(px(10.))
+                    .pt(px(2.))
+                    .pb(px(4.))
+                    .text_size(px(11.))
+                    .text_color(palette.muted)
+                    .child("Meer"),
+            )
+            .child(item(TargetType::CameraOnly))
+    }
+
+    fn choose_source(&mut self, kind: TargetType, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_menu = false;
+        self.target = Some(kind);
+        match kind {
+            TargetType::Window if self.selected_window.is_none() => {
+                self.open_panel(Panel::Target(TargetType::Window), window, cx);
+            }
+            TargetType::CameraOnly if self.camera.is_none() => {
+                self.open_panel(Panel::Device(DeviceMenu::Camera), window, cx);
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Display, Window and Camera Only start straight from here; Area still
+    /// needs the overlay to draw its rectangle, and the overlay starts it.
+    fn start_from_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menus(cx);
+        let kind = self.source_kind();
+        self.target = Some(kind);
+        match kind {
+            TargetType::Area => self.sync_overlays(cx),
+            TargetType::Window if self.selected_window.is_none() => {
+                self.open_panel(Panel::Target(TargetType::Window), window, cx);
+            }
+            _ => self.start_recording(window, cx),
+        }
+        cx.notify();
+    }
+
+    fn render_start_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
+        let busy = self.session.read(cx).phase != Phase::Idle || self.checking_storage;
+        let label = if self.effective_mode(cx) == Mode::Screenshot {
+            "Screenshot maken"
+        } else {
+            "Opname starten"
+        };
+
+        div()
+            .id("start-recording")
+            .tab_index(0)
+            .mt(px(14.))
+            .h(px(48.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(12.))
+            .bg(palette.accent)
+            .text_color(palette.on_accent)
+            .text_size(px(15.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .shadow(vec![shadow(
+                black_alpha(if self.theme.is_dark() { 0.3 } else { 0.18 }),
+                1.,
+                2.,
+                0.,
+                false,
+            )])
+            .when(busy, |this| this.opacity(0.6))
+            .when(!busy, |this| {
+                this.hover(|style| style.opacity(0.92))
+                    .active(|style| style.opacity(0.85))
+            })
+            .child(label)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.start_from_button(window, cx);
+            }))
+    }
+
+    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
+        let more_open = self.more_menu;
+
+        let item = |id: &'static str, icon: &'static str, label: &'static str, active: bool| {
+            div()
+                .id(id)
+                .tab_index(0)
+                .flex()
+                .flex_col()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .h(px(52.))
+                .rounded(px(10.))
+                .text_size(px(11.))
+                .text_color(palette.muted)
+                .when(active, |this| this.bg(palette.footer_hover))
+                .hover(|style| style.bg(palette.footer_hover))
+                .child(svg().path(icon).size(px(20.)).text_color(palette.tile_icon))
+                .child(label)
+        };
+
+        div()
+            .mt(px(23.))
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .gap(px(4.))
+            .child(
+                item(
+                    "footer-settings",
+                    "icons/settings.svg",
+                    "Instellingen",
+                    false,
+                )
+                .on_click(cx.listener(|_, _, _window, cx| {
+                    cx.defer(|cx: &mut gpui::App| {
+                        app_windows::open_settings(crate::settings_window::Page::General, cx)
+                    });
+                })),
+            )
+            .child(
+                item(
+                    "footer-recordings",
+                    "icons/play-circle.svg",
+                    "Opnames",
+                    false,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_panel(Panel::Library(LibraryKind::Recordings), window, cx);
+                })),
+            )
+            .child(
+                item(
+                    "footer-screenshots",
+                    "icons/image.svg",
+                    "Afbeeldingen",
+                    false,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_panel(Panel::Library(LibraryKind::Screenshots), window, cx);
+                })),
+            )
+            .child(
+                item(
+                    "footer-more",
+                    "icons/more-horizontal.svg",
+                    "Meer",
+                    more_open,
+                )
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.more_menu = !this.more_menu;
+                    this.source_menu = false;
+                    cx.notify();
+                })),
             )
     }
 
-    /// `BaseControls`: camera, microphone, system audio.
-    fn render_base_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_more_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = RecorderPalette::new(self.theme.appearance);
+
+        let item = |id: &'static str,
+                    icon: &'static str,
+                    label: &'static str,
+                    action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
+            div()
+                .id(id)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .h(px(36.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .text_size(px(13.))
+                .text_color(palette.text)
+                .hover(|style| style.bg(palette.popover_hover))
+                .child(
+                    svg()
+                        .path(icon)
+                        .size(px(16.))
+                        .flex_shrink_0()
+                        .text_color(palette.tile_icon),
+                )
+                .child(label)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.more_menu = false;
+                    action(this, window, cx);
+                    cx.notify();
+                }))
+        };
+
+        self.render_popover()
+            .bottom(px(64.))
+            .right(px(13.))
+            .w(px(220.))
+            .child(item(
+                "more-teleprompter",
+                "icons/scan-text.svg",
+                "Teleprompter",
+                |_, _, cx| {
+                    cx.defer(app_windows::open_teleprompter);
+                },
+            ))
+            .child(item(
+                "more-modes",
+                "icons/info.svg",
+                "Over de opnamemodi",
+                |this, window, cx| {
+                    this.open_panel(Panel::ModeInfo, window, cx);
+                },
+            ))
+            .child(self.render_menu_divider())
+            .child(item(
+                "more-help",
+                "icons/circle-help.svg",
+                "Hulp & rondleiding",
+                |_, _, cx| {
+                    cx.defer(app_windows::open_onboarding);
+                },
+            ))
+    }
+
+    fn render_base_controls(&self, dimmed: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let camera_pill = if self.camera.is_some()
+            && let Some(pill) = self.access_pill(OSPermission::Camera, cx)
+        {
+            pill
+        } else if self.camera.is_some() {
+            if self.devices.cameras.iter().any(|camera| {
+                Some(&camera.device_id) == self.camera.as_ref().map(|selected| &selected.device_id)
+            }) {
+                PillState::On
+            } else {
+                PillState::Disconnected
+            }
+        } else {
+            PillState::Off
+        };
+        let microphone_pill = if self.microphone.is_some()
+            && let Some(pill) = self.access_pill(OSPermission::Microphone, cx)
+        {
+            pill
+        } else if self.microphone.is_some() {
+            if self.devices.microphones.iter().any(|microphone| {
+                Some(&microphone.name) == self.microphone.as_ref().map(|selected| &selected.name)
+            }) {
+                PillState::On
+            } else {
+                PillState::Disconnected
+            }
+        } else {
+            PillState::Off
+        };
+
         div()
             .flex()
             .flex_col()
             .gap(px(8.))
             .w_full()
+            .when(dimmed, |this| this.opacity(0.45))
             .child(
-                div()
-                    .px(px(4.))
-                    .text_size(px(10.))
-                    .line_height(px(14.))
-                    .text_color(self.theme.gray_11)
-                    .child("Choose your camera and microphone"),
+                self.render_device_row(
+                    "camera-row",
+                    if self.camera.is_some() {
+                        "icons/camera.svg"
+                    } else {
+                        "icons/video-off.svg"
+                    },
+                    self.camera.is_some(),
+                    self.camera
+                        .as_ref()
+                        .map(|camera| camera.label.clone())
+                        .unwrap_or_else(|| "Camera".into()),
+                    camera_pill,
+                    Some(DeviceMenu::Camera),
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if !this.enumerating && this.device_changes_allowed(cx) {
+                        this.open_panel(Panel::Device(DeviceMenu::Camera), window, cx);
+                    }
+                })),
             )
             .child(
-                div().flex().flex_col().child(
-                    self.render_device_row(
-                        "camera-row",
-                        "icons/camera.svg",
-                        self.camera
-                            .as_ref()
-                            .map(|camera| camera.label.clone())
-                            .unwrap_or_else(|| "No Camera".into()),
-                        if self.camera.is_some()
-                            && let Some(pill) = self.access_pill(OSPermission::Camera, cx)
-                        {
-                            pill
-                        } else if self.camera.is_some() {
-                            if self.devices.cameras.iter().any(|camera| {
-                                Some(&camera.device_id)
-                                    == self.camera.as_ref().map(|selected| &selected.device_id)
-                            }) {
-                                PillState::On
-                            } else {
-                                PillState::Disconnected
-                            }
-                        } else {
-                            PillState::Off
-                        },
-                        Some(DeviceMenu::Camera),
-                        cx,
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        // Through `open_panel`, so the filter field takes focus
-                        // the way it already does for the display and window
-                        // panels -- before the field was real there was nothing
-                        // to focus into.
-                        if !this.enumerating && this.device_changes_allowed(cx) {
-                            this.open_panel(Panel::Device(DeviceMenu::Camera), window, cx);
-                        }
-                    })),
-                ),
+                self.render_device_row(
+                    "microphone-row",
+                    if self.microphone.is_some() {
+                        "icons/microphone.svg"
+                    } else {
+                        "icons/mic-off.svg"
+                    },
+                    self.microphone.is_some(),
+                    self.microphone
+                        .as_ref()
+                        .map(|mic| mic.name.clone())
+                        .unwrap_or_else(|| "Microfoon".into()),
+                    microphone_pill,
+                    Some(DeviceMenu::Microphone),
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if !this.enumerating && this.device_changes_allowed(cx) {
+                        this.open_panel(Panel::Device(DeviceMenu::Microphone), window, cx);
+                    }
+                })),
             )
             .child(
-                div().flex().flex_col().child(
-                    self.render_device_row(
-                        "microphone-row",
-                        "icons/microphone.svg",
-                        self.microphone
-                            .as_ref()
-                            .map(|mic| mic.name.clone())
-                            .unwrap_or_else(|| "No Microphone".into()),
-                        if self.microphone.is_some()
-                            && let Some(pill) = self.access_pill(OSPermission::Microphone, cx)
-                        {
-                            pill
-                        } else if self.microphone.is_some() {
-                            if self.devices.microphones.iter().any(|microphone| {
-                                Some(&microphone.name)
-                                    == self.microphone.as_ref().map(|selected| &selected.name)
-                            }) {
-                                PillState::On
-                            } else {
-                                PillState::Disconnected
-                            }
-                        } else {
-                            PillState::Off
-                        },
-                        Some(DeviceMenu::Microphone),
-                        cx,
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        // Through `open_panel`, so the filter field takes focus
-                        // the way it already does for the display and window
-                        // panels -- before the field was real there was nothing
-                        // to focus into.
-                        if !this.enumerating && this.device_changes_allowed(cx) {
-                            this.open_panel(Panel::Device(DeviceMenu::Microphone), window, cx);
-                        }
-                    })),
-                ),
-            )
-            .child(
-                div().flex().flex_col().child(
-                    self.render_device_row(
-                        "system-audio-row",
-                        "icons/screen.svg",
-                        if self.system_audio {
-                            "Record System Audio".into()
-                        } else {
-                            "No System Audio".into()
-                        },
-                        if self.system_audio {
-                            PillState::On
-                        } else {
-                            PillState::Off
-                        },
-                        None,
-                        cx,
-                    )
-                    // System audio has no device to choose, so the row is a
-                    // plain toggle rather than a picker.
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        if this.device_changes_allowed(cx) {
-                            this.set_system_audio(!this.system_audio, cx);
-                        }
-                    })),
-                ),
+                self.render_device_row(
+                    "system-audio-row",
+                    if self.system_audio {
+                        "icons/audio-on.svg"
+                    } else {
+                        "icons/volume-x.svg"
+                    },
+                    self.system_audio,
+                    "Systeemgeluid".into(),
+                    if self.system_audio {
+                        PillState::On
+                    } else {
+                        PillState::Off
+                    },
+                    None,
+                    cx,
+                )
+                // System audio has no device to choose, so the row is a
+                // plain toggle rather than a picker.
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    if this.device_changes_allowed(cx) {
+                        this.set_system_audio(!this.system_audio, cx);
+                    }
+                })),
             )
     }
 
-    /// `DEVICE_ROW_CLASS`: 42px tall, `rounded-lg`, `border-gray-6`, `bg-gray-2`,
-    /// `pl-3 pr-1.5 gap-2.5`.
+    #[allow(clippy::too_many_arguments)]
     fn render_device_row(
         &self,
         id: &'static str,
         icon: &'static str,
+        active: bool,
         label: String,
         pill: PillState,
         menu: Option<DeviceMenu>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let theme = self.theme;
+        let palette = RecorderPalette::new(self.theme.appearance);
 
         div()
             .id(SharedString::from(id))
@@ -6612,13 +6556,15 @@ impl MainWindow {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(10.))
-            .pl(px(12.))
-            .pr(px(6.))
+            .gap(px(12.))
+            .pl(px(14.))
+            .pr(px(12.))
             .w_full()
             .h(px(DEVICE_ROW_HEIGHT))
-            .rounded(px(10.))
-            .map(|this| glass_button(this, theme, false))
+            .rounded(px(12.))
+            .bg(palette.tile)
+            .border_1()
+            .border_color(palette.tile_border)
             .cursor_default()
             .overflow_hidden()
             .child(
@@ -6628,9 +6574,7 @@ impl MainWindow {
                     .top_0()
                     .left_0()
                     .size_full()
-                    .rounded(px(9.))
-                    .group_hover(id, move |style| style.bg(capture_hover_fill(theme, false)))
-                    .group_active(id, move |style| style.bg(capture_press_fill(theme, false))),
+                    .group_hover(id, move |style| style.bg(palette.tile_hover)),
             )
             .when(menu == Some(DeviceMenu::Microphone), |this| {
                 this.child(
@@ -6646,9 +6590,13 @@ impl MainWindow {
             .child(
                 svg()
                     .path(icon)
-                    .size(px(16.))
+                    .size(px(20.))
                     .flex_shrink_0()
-                    .text_color(theme.gray_11),
+                    .text_color(if active {
+                        palette.tile_icon
+                    } else {
+                        palette.off_icon
+                    }),
             )
             .child(
                 div()
@@ -6656,14 +6604,14 @@ impl MainWindow {
                     .min_w_0()
                     .text_size(px(14.))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.gray_12)
+                    .text_color(palette.text)
                     .truncate()
                     .child(label),
             )
             .child(
                 div()
                     .id(SharedString::from(format!("{id}-toggle")))
-                    .child(pill.render(theme))
+                    .child(pill.render(palette))
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         let Some(menu) = menu else {
                             return;
@@ -6696,6 +6644,15 @@ impl MainWindow {
                     })),
             )
             .group(id)
+    }
+}
+
+fn source_label(kind: TargetType) -> &'static str {
+    match kind {
+        TargetType::Display => "Scherm",
+        TargetType::Window => "Venster",
+        TargetType::Area => "Gebied",
+        TargetType::CameraOnly => "Alleen camera",
     }
 }
 
@@ -6749,16 +6706,12 @@ enum PillState {
 }
 
 impl PillState {
-    fn render(self, theme: Theme) -> impl IntoElement {
+    fn render(self, palette: RecorderPalette) -> impl IntoElement {
         let (bg, fg, text) = match self {
-            Self::On => (Hsla::from(theme.blue_9), gpui::white(), "On"),
-            Self::Off => (theme.body_fill(5), Hsla::from(theme.gray_11), "Off"),
-            Self::Disconnected => (
-                theme.body_fill(5),
-                Hsla::from(theme.gray_11),
-                "Not connected",
-            ),
-            Self::Access(label) => (Hsla::from(theme.amber_3), Hsla::from(theme.amber_11), label),
+            Self::On => (palette.accent, palette.on_accent, "Aan"),
+            Self::Off => (palette.off_pill, palette.off_pill_text, "Uit"),
+            Self::Disconnected => (palette.off_pill, palette.off_pill_text, "Niet verbonden"),
+            Self::Access(label) => (palette.accent_soft, palette.accent_text, label),
         };
 
         div()
@@ -6772,7 +6725,7 @@ impl PillState {
             .rounded_full()
             .bg(bg)
             .text_size(px(11.))
-            .font_weight(FontWeight::MEDIUM)
+            .font_weight(FontWeight::SEMIBOLD)
             .text_color(fg)
             .child(text)
     }

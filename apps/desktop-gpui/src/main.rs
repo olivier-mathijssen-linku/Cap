@@ -92,7 +92,7 @@ use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use crate::{assets::Assets, main_window::MainWindow, session::RecordingSession};
 
 const MAIN_WINDOW_WIDTH: f32 = 330.;
-const MAIN_WINDOW_HEIGHT: f32 = 435.;
+const MAIN_WINDOW_HEIGHT: f32 = 463.;
 
 /// The corner radius the native material is clipped to. `radius = 16` for
 /// material `"panel"` on both visual systems in
@@ -365,17 +365,17 @@ fn main() {
                     titlebar: None,
                     #[cfg(target_os = "windows")]
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Cap".into()),
+                        title: Some("Kiekes".into()),
                         appears_transparent: true,
                         ..Default::default()
                     }),
                     #[cfg(target_os = "linux")]
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Cap".into()),
+                        title: Some("Kiekes".into()),
                         ..Default::default()
                     }),
                     #[cfg(target_os = "linux")]
-                    app_id: Some("Cap".into()),
+                    app_id: Some("Kiekes".into()),
                     #[cfg(target_os = "linux")]
                     window_min_size: Some(size(px(MAIN_WINDOW_WIDTH), px(MAIN_WINDOW_HEIGHT))),
                     #[cfg(target_os = "linux")]

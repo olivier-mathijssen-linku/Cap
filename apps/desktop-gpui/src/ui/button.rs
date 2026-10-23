@@ -349,11 +349,11 @@ fn radix_paint(theme: &Theme, variant: ButtonVariant) -> ButtonPaint {
         // `bg-blue-600 ... hover:bg-blue-700`: Tailwind's blue, not Radix's --
         // the two scales differ and the class is `blue-600`, not `blue-9`.
         ButtonVariant::Blue => ButtonPaint {
-            bg: Some(gpui::rgb(0x2563eb).into()),
-            hover_bg: Some(gpui::rgb(0x1d4ed8).into()),
+            bg: Some(gpui::rgb(0x3b66c4).into()),
+            hover_bg: Some(gpui::rgb(0x345cb3).into()),
             text: gpui::white(),
             hover_text: None,
-            border: Some(gpui::rgb(0x1e40af).into()),
+            border: Some(gpui::rgb(0x2a4b94).into()),
             hover_border: None,
         },
         ButtonVariant::Destructive => ButtonPaint {
