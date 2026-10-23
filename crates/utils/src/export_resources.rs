@@ -122,14 +122,9 @@ impl ExportResources {
                 disk.description
             ));
         }
-        #[cfg(any(target_os = "macos", test))]
-        let memory_warning = matches!(
-            sample.memory,
-            MemoryPressure::Warning | MemoryPressure::Critical
-        );
-        #[cfg(not(any(target_os = "macos", test)))]
-        let memory_warning = sample.memory == MemoryPressure::Critical;
-        if memory_warning {
+        // macOS sits at its "warning" level whenever a few large apps are
+        // open, so only critical pressure is worth interrupting an export for.
+        if sample.memory == MemoryPressure::Critical {
             warnings.push("Your computer is already under memory pressure. Close other applications before exporting.".to_string());
         }
         if warnings.is_empty() {
@@ -312,6 +307,24 @@ mod tests {
             let observation = sample(Some(free), MemoryPressure::Normal);
             assert_eq!(resources.warning(&observation).is_some(), warns);
             assert_eq!(resources.disk_failure(&observation).is_some(), stops);
+        }
+    }
+
+    #[test]
+    fn only_critical_memory_pressure_warns_before_export() {
+        let resources = resources();
+        for (pressure, warns) in [
+            (MemoryPressure::Unknown, false),
+            (MemoryPressure::Normal, false),
+            (MemoryPressure::Warning, false),
+            (MemoryPressure::Critical, true),
+        ] {
+            let observation = sample(Some(9 * GIB), pressure);
+            assert_eq!(
+                resources.warning(&observation).is_some(),
+                warns,
+                "{pressure:?}"
+            );
         }
     }
 
